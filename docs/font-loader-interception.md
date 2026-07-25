@@ -16,6 +16,25 @@ DirectWriteのカスタムコレクションローダーは、コレクション
 
 ## 推奨構成
 
+### FontManager連携PoC
+
+`editor-plugin.aux2`の`RegisterPlugin(HOST_APP_TABLE*)`から
+`register_font_collection()`を呼び出す。`%AppData%/compositefont/fonts`配下の
+TTF/OTF/TTC/OTCをDirectWriteのカスタムコレクションへまとめ、プラグイン終了まで
+COM参照を保持する。単体の入力プラグインは`HOST_APP_TABLE`を受け取れないため使用しない。
+エディターのフォントプルダウンもGDIのシステムフォント列挙ではなく、
+`EDIT_HANDLE.enum_font_name()`が返すFontManagerの登録名を使用する。
+
+この登録はフォントをFontManagerへ供給する経路であり、文字ごとのフォント解決フックではない。
+合成フォントの切り替え本体は以下の`decorate`方式を維持する。
+
+追加フォントは`%AppData%/compositefont/fonts`へ配置する。エディターの`保存`ボタンを押すと
+ディレクトリを再走査して未登録ファイルを検出する。ただし、AviUtl2は初期化中以外の
+`register_font_collection()`を拒否するため、その場では登録せず、再起動が必要なことを表示する。
+次回起動時に新しいコレクションとして追加登録し、同じパスは重複登録しない。
+現段階では追加登録だけを扱うため、削除や同名フォントの置換後も既に登録したコレクションは
+AviUtl2終了まで保持される。完全に入れ替える場合もAviUtl2を再起動する。
+
 module-pluginへ次の関数を追加する。
 
 ```lua

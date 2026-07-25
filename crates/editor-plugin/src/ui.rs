@@ -1,5 +1,11 @@
-use std::{ffi::c_void, mem::size_of, path::PathBuf, sync::OnceLock};
+use std::{
+    ffi::c_void,
+    mem::size_of,
+    path::PathBuf,
+    sync::{Arc, Mutex, OnceLock},
+};
 
+use aviutl2::generic::EditHandle;
 use compositefont_core::ProfileDocument;
 use windows::{
     Win32::{
@@ -7,12 +13,11 @@ use windows::{
         Graphics::Gdi::{
             BeginPaint, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, COLOR_WINDOW, CreateFontW,
             CreatePen, DEFAULT_CHARSET, DEFAULT_GUI_FONT, DEFAULT_PITCH, DeleteObject, EndPaint,
-            EnumFontFamiliesExW, FIXED, FW_NORMAL, GDI_ERROR, GGO_METRICS, GLYPHMETRICS,
-            GM_ADVANCED, GetDC, GetGlyphOutlineW, GetStockObject, GetSysColorBrush,
-            GetTextExtentPoint32W, GetTextMetricsW, HDC, HGDIOBJ, InvalidateRect, LOGFONTW, LineTo,
-            MAT2, MoveToEx, OUT_DEFAULT_PRECIS, PAINTSTRUCT, PS_SOLID, ReleaseDC, SelectObject,
-            SetBkMode, SetGraphicsMode, SetWorldTransform, TEXTMETRICW, TRANSPARENT, TextOutW,
-            XFORM,
+            FIXED, FW_NORMAL, GDI_ERROR, GGO_METRICS, GLYPHMETRICS, GM_ADVANCED, GetGlyphOutlineW,
+            GetStockObject, GetSysColorBrush, GetTextExtentPoint32W, GetTextMetricsW, HDC, HGDIOBJ,
+            InvalidateRect, LineTo, MAT2, MoveToEx, OUT_DEFAULT_PRECIS, PAINTSTRUCT, PS_SOLID,
+            SelectObject, SetBkMode, SetGraphicsMode, SetWorldTransform, TEXTMETRICW, TRANSPARENT,
+            TextOutW, XFORM,
         },
         System::LibraryLoader::GetModuleHandleW,
         UI::{
@@ -51,6 +56,7 @@ use windows::{
 };
 
 use crate::{
+    font_collection::FontRegistrationState,
     model::{CATEGORY_ROWS, EditorModel},
     storage::save_document,
 };
@@ -100,17 +106,27 @@ struct DialogContext {
     model: EditorModel,
     persisted_document: ProfileDocument,
     profile_path: PathBuf,
+    font_registration: Arc<Mutex<FontRegistrationState>>,
+    font_names: Vec<String>,
     controls: Controls,
     refreshing: bool,
     sample_visible: bool,
 }
 
 impl DialogContext {
-    fn new(document: ProfileDocument, profile_path: PathBuf) -> Self {
+    fn new(
+        document: ProfileDocument,
+        profile_path: PathBuf,
+        edit_handle: Arc<EditHandle>,
+        font_registration: Arc<Mutex<FontRegistrationState>>,
+    ) -> Self {
+        let font_names = edit_handle.get_font_names();
         Self {
             model: EditorModel::new(document.clone()),
             persisted_document: document,
             profile_path,
+            font_registration,
+            font_names,
             controls: Controls::default(),
             refreshing: false,
             sample_visible: true,
@@ -122,10 +138,17 @@ pub fn show_editor(
     owner: aviutl2::Win32WindowHandle,
     document: ProfileDocument,
     profile_path: PathBuf,
+    edit_handle: Arc<EditHandle>,
+    font_registration: Arc<Mutex<FontRegistrationState>>,
 ) -> Result<ProfileDocument, String> {
     register_window_class()?;
     let owner = HWND(owner.hwnd.get() as *mut c_void);
-    let mut context = Box::new(DialogContext::new(document, profile_path));
+    let mut context = Box::new(DialogContext::new(
+        document,
+        profile_path,
+        edit_handle,
+        font_registration,
+    ));
     let context_ptr = (&mut *context) as *mut DialogContext;
     let instance = module_instance()?;
 
@@ -771,11 +794,21 @@ unsafe fn handle_command(window: HWND, context: &mut DialogContext, id: usize, n
             Ok(()) => unsafe { refresh_all(context) },
             Err(error) => unsafe { show_error(Some(window), &error) },
         },
-        (ID_SAVE, BN_CLICKED) => match unsafe { commit_and_save(context) } {
-            Ok(()) => unsafe {
+        (ID_SAVE, BN_CLICKED) => match unsafe {
+            commit_and_save(context).and_then(|()| scan_private_fonts_after_save(context))
+        } {
+            Ok(pending_font_count) => unsafe {
+                let message = if pending_font_count == 0 {
+                    "プロファイルを保存しました。".to_owned()
+                } else {
+                    format!(
+                        "プロファイルを保存しました。追加フォント{pending_font_count}件は、AviUtl2の再起動後にFontManagerへ登録されます。"
+                    )
+                };
+                let message = wide(&message);
                 MessageBoxW(
                     Some(window),
-                    w!("プロファイルを保存しました。"),
+                    PCWSTR(message.as_ptr()),
                     w!("合成フォント"),
                     MB_OK | MB_ICONINFORMATION,
                 );
@@ -826,6 +859,28 @@ unsafe fn commit_and_save(context: &mut DialogContext) -> Result<(), String> {
     save_document(&context.profile_path, &document)?;
     context.persisted_document = document;
     Ok(())
+}
+
+fn scan_private_fonts_after_save(context: &mut DialogContext) -> Result<usize, String> {
+    // AviUtl2 rejects register_font_collection outside plugin initialization. The directory is
+    // therefore the pending manifest consumed by register_initial_fonts on the next launch.
+    let pending_font_count = context
+        .font_registration
+        .lock()
+        .map_err(|_| "profile was saved, but font registration state is poisoned".to_owned())?
+        .pending_font_file_count()
+        .map_err(|error| format!("profile was saved, but private font scan failed: {error}"))?;
+
+    if pending_font_count == 0 {
+        let _ = aviutl2::logger::write_info_log(
+            "Composite Font: Save button found no unregistered private font files",
+        );
+    } else {
+        let _ = aviutl2::logger::write_warn_log(&format!(
+            "Composite Font: Save button staged {pending_font_count} additive private font file(s); AviUtl2 only accepts registerFontCollection during initialization, so restart is required"
+        ));
+    }
+    Ok(pending_font_count)
 }
 
 unsafe fn apply_editor_fields(context: &mut DialogContext) -> Result<(), String> {
@@ -985,7 +1040,7 @@ unsafe fn refresh_preview(context: &DialogContext) {
 }
 
 unsafe fn fill_font_combo(context: &DialogContext) {
-    let mut fonts = unsafe { enumerate_system_fonts() };
+    let mut fonts = context.font_names.clone();
     for profile in &context.model.document().profiles {
         for row in CATEGORY_ROWS {
             let family = &profile.adjustment_for(row.class).font_family;
@@ -1134,48 +1189,6 @@ fn wheel_target_top(current: i32, count: i32, delta: i32) -> i32 {
     let notches = delta.unsigned_abs().div_ceil(120) as i32;
     let direction = if delta > 0 { -1 } else { 1 };
     (current + direction * notches * 3).clamp(0, count - 1)
-}
-
-unsafe fn enumerate_system_fonts() -> Vec<String> {
-    unsafe extern "system" fn callback(
-        logfont: *const LOGFONTW,
-        _metric: *const TEXTMETRICW,
-        _font_type: u32,
-        data: LPARAM,
-    ) -> i32 {
-        let fonts = unsafe { &mut *(data.0 as *mut Vec<String>) };
-        let face_name = unsafe { &(*logfont).lfFaceName };
-        let length = face_name
-            .iter()
-            .position(|character| *character == 0)
-            .unwrap_or(face_name.len());
-        let name = String::from_utf16_lossy(&face_name[..length]);
-        if !name.is_empty() && !name.starts_with('@') {
-            fonts.push(name);
-        }
-        1
-    }
-
-    let dc = unsafe { GetDC(None) };
-    if dc.is_invalid() {
-        return Vec::new();
-    }
-    let request = LOGFONTW {
-        lfCharSet: DEFAULT_CHARSET,
-        ..Default::default()
-    };
-    let mut fonts = Vec::new();
-    unsafe {
-        EnumFontFamiliesExW(
-            dc,
-            &request,
-            Some(callback),
-            LPARAM((&mut fonts as *mut Vec<String>) as isize),
-            0,
-        );
-        ReleaseDC(None, dc);
-    }
-    fonts
 }
 
 unsafe fn list_insert_column(list: HWND, index: usize, title: &str, width: i32) {
