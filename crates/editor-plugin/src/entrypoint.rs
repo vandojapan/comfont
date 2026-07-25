@@ -1,8 +1,4 @@
-use crate::{
-    CompositeFontEditorPlugin,
-    font_collection::{self, FontRegistrationOutcome},
-};
-use aviutl2::generic::__bridge::GenericSingleton;
+use crate::CompositeFontEditorPlugin;
 use aviutl2::sys::{
     cache2::CACHE_HANDLE,
     config2::CONFIG_HANDLE,
@@ -44,60 +40,9 @@ unsafe extern "C" fn GetCommonPluginTable() -> *mut COMMON_PLUGIN_TABLE {
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn RegisterPlugin(host: *mut HOST_APP_TABLE) {
-    let result = std::panic::catch_unwind(|| unsafe { register_font_collection(host) });
-    match result {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => {
-            let _ = aviutl2::logger::write_error_log(&format!(
-                "Composite Font: custom font collection registration failed: {error}"
-            ));
-        }
-        Err(_) => {
-            let _ = aviutl2::logger::write_error_log(
-                "Composite Font: custom font collection registration panicked",
-            );
-        }
-    }
-
     unsafe {
         aviutl2::generic::__bridge::register_plugin_unwind::<CompositeFontEditorPlugin>(host);
     }
-}
-
-unsafe fn register_font_collection(host: *mut HOST_APP_TABLE) -> Result<(), String> {
-    let host = unsafe { host.as_ref() }.ok_or_else(|| "HOST_APP_TABLE is null".to_owned())?;
-    let (outcome, collection_count) = CompositeFontEditorPlugin::with_instance_mut(|plugin| {
-        let mut state = plugin
-            .font_registration
-            .lock()
-            .map_err(|_| "font registration state is poisoned".to_owned())?;
-        let outcome = state.register_initial_fonts(host.register_font_collection)?;
-        Ok::<_, String>((outcome, state.registered_collection_count()))
-    })?;
-
-    log_registration_outcome(outcome, collection_count, "startup");
-    Ok(())
-}
-
-pub(crate) fn log_registration_outcome(
-    outcome: FontRegistrationOutcome,
-    collection_count: usize,
-    trigger: &str,
-) {
-    let message = match outcome {
-        FontRegistrationOutcome::Added { font_file_count } => format!(
-            "Composite Font: {trigger} registered {font_file_count} private font file(s) as additive collection #{collection_count} from {}",
-            font_collection::font_directory().display()
-        ),
-        FontRegistrationOutcome::Unchanged => {
-            format!("Composite Font: {trigger} found no private font changes; registration skipped")
-        }
-        FontRegistrationOutcome::NoFonts => format!(
-            "Composite Font: {trigger} found no private font files in {}; existing registrations remain until restart",
-            font_collection::font_directory().display()
-        ),
-    };
-    let _ = aviutl2::logger::write_info_log(&message);
 }
 
 #[unsafe(no_mangle)]

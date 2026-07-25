@@ -25,11 +25,11 @@ use windows::{
                 BST_CHECKED, CB_SETMINVISIBLE, COMBOBOXINFO, EM_SETSEL, GetComboBoxInfo,
                 ICC_LISTVIEW_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx,
                 LIST_VIEW_ITEM_STATE_FLAGS, LVCF_TEXT, LVCF_WIDTH, LVCOLUMNW, LVIF_TEXT,
-                LVIS_FOCUSED, LVIS_SELECTED, LVITEMW, LVM_DELETEALLITEMS, LVM_INSERTCOLUMNW,
-                LVM_INSERTITEMW, LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMSTATE, LVM_SETITEMTEXTW,
-                LVN_ITEMCHANGED, LVS_EX_DOUBLEBUFFER, LVS_EX_FULLROWSELECT, LVS_EX_GRIDLINES,
-                LVS_REPORT, LVS_SHOWSELALWAYS, LVS_SINGLESEL, NMLISTVIEW, ShowScrollBar,
-                WC_LISTVIEWW,
+                LVIS_FOCUSED, LVIS_SELECTED, LVITEMW, LVM_DELETEALLITEMS, LVM_GETITEMCOUNT,
+                LVM_GETNEXTITEM, LVM_INSERTCOLUMNW, LVM_INSERTITEMW, LVM_SETEXTENDEDLISTVIEWSTYLE,
+                LVM_SETITEMSTATE, LVM_SETITEMTEXTW, LVN_ITEMCHANGED, LVNI_SELECTED,
+                LVS_EX_DOUBLEBUFFER, LVS_EX_FULLROWSELECT, LVS_EX_GRIDLINES, LVS_REPORT,
+                LVS_SHOWSELALWAYS, NMLISTVIEW, ShowScrollBar, WC_LISTVIEWW,
             },
             Input::KeyboardAndMouse::EnableWindow,
             WindowsAndMessaging::{
@@ -56,7 +56,7 @@ use windows::{
 };
 
 use crate::{
-    font_collection::FontRegistrationState,
+    font_collection::{self, FontRegistrationState, FontStageOutcome},
     model::{CATEGORY_ROWS, EditorModel},
     storage::save_document,
 };
@@ -79,6 +79,8 @@ const ID_TRACKING: usize = 123;
 const ID_APPLY: usize = 124;
 const ID_VERTICAL_SCALE: usize = 125;
 const ID_HORIZONTAL_SCALE: usize = 126;
+const ID_ROW_ADD: usize = 127;
+const ID_ROW_REMOVE: usize = 128;
 const ID_NEW: usize = 130;
 const ID_SAVE: usize = 131;
 const ID_DELETE: usize = 132;
@@ -98,6 +100,8 @@ struct Controls {
     tracking: HWND,
     vertical_scale: HWND,
     horizontal_scale: HWND,
+    row_add: HWND,
+    row_remove: HWND,
     sample_visible: HWND,
     preview: HWND,
 }
@@ -106,6 +110,7 @@ struct DialogContext {
     model: EditorModel,
     persisted_document: ProfileDocument,
     profile_path: PathBuf,
+    edit_handle: Arc<EditHandle>,
     font_registration: Arc<Mutex<FontRegistrationState>>,
     font_names: Vec<String>,
     controls: Controls,
@@ -120,11 +125,12 @@ impl DialogContext {
         edit_handle: Arc<EditHandle>,
         font_registration: Arc<Mutex<FontRegistrationState>>,
     ) -> Self {
-        let font_names = edit_handle.get_font_names();
+        let font_names = query_font_names(&edit_handle);
         Self {
             model: EditorModel::new(document.clone()),
             persisted_document: document,
             profile_path,
+            edit_handle,
             font_registration,
             font_names,
             controls: Controls::default(),
@@ -156,7 +162,7 @@ pub fn show_editor(
         CreateWindowExW(
             WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
             CLASS_NAME,
-            w!("合成フォント"),
+            w!("合成フォント設定"),
             WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
@@ -297,22 +303,17 @@ unsafe extern "system" fn window_proc(
         WM_NOTIFY => {
             if lparam.0 != 0 {
                 let notification = unsafe { &*(lparam.0 as *const NMLISTVIEW) };
-                let selected_row_changed = notification.hdr.idFrom == ID_LIST
+                let focused_row_changed = notification.hdr.idFrom == ID_LIST
                     && notification.hdr.code == LVN_ITEMCHANGED
                     && notification.iItem >= 0
-                    && notification.uNewState & LVIS_SELECTED.0 != 0
+                    && notification.uNewState & LVIS_FOCUSED.0 != 0
                     && !context.refreshing;
-                if selected_row_changed {
-                    match unsafe { apply_editor_fields(context) } {
-                        Ok(()) => {
-                            if context.model.select_category(notification.iItem as usize) {
-                                unsafe {
-                                    refresh_editor_fields(context);
-                                    refresh_preview(context);
-                                }
-                            }
-                        }
-                        Err(error) => unsafe { show_error(Some(window), &error) },
+                if focused_row_changed
+                    && select_table_row(&mut context.model, notification.iItem as usize)
+                {
+                    unsafe {
+                        refresh_editor_fields(context);
+                        refresh_row_remove_enabled(context);
                     }
                 }
             }
@@ -371,7 +372,7 @@ unsafe fn create_controls(window: HWND, context: &mut DialogContext) -> Result<(
     let font = unsafe { GetStockObject(DEFAULT_GUI_FONT) };
 
     unsafe {
-        create_label(window, instance, "合成フォント：", 20, 20, 95, 24, 0, font)?;
+        create_label(window, instance, "プロファイル：", 20, 20, 95, 24, 0, font)?;
         context.controls.profile = create_child(
             window,
             instance,
@@ -417,12 +418,12 @@ unsafe fn create_controls(window: HWND, context: &mut DialogContext) -> Result<(
                 | WS_VISIBLE
                 | WS_TABSTOP
                 | WS_BORDER
-                | WINDOW_STYLE(LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS),
+                | WINDOW_STYLE(LVS_REPORT | LVS_SHOWSELALWAYS),
             WS_EX_CLIENTEDGE,
             20,
             55,
             730,
-            220,
+            190,
             ID_LIST,
             font,
         )?;
@@ -450,6 +451,46 @@ unsafe fn create_controls(window: HWND, context: &mut DialogContext) -> Result<(
         {
             list_insert_column(context.controls.list, index, title, width);
         }
+
+        context.controls.row_add = create_child(
+            window,
+            instance,
+            w!("BUTTON"),
+            "+",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+            WINDOW_EX_STYLE(0),
+            20,
+            250,
+            32,
+            26,
+            ID_ROW_ADD,
+            font,
+        )?;
+        context.controls.row_remove = create_child(
+            window,
+            instance,
+            w!("BUTTON"),
+            "−",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+            WINDOW_EX_STYLE(0),
+            58,
+            250,
+            32,
+            26,
+            ID_ROW_REMOVE,
+            font,
+        )?;
+        create_label(
+            window,
+            instance,
+            "同じ文字種は上から優先",
+            105,
+            254,
+            180,
+            20,
+            0,
+            font,
+        )?;
 
         create_child(
             window,
@@ -521,22 +562,10 @@ unsafe fn create_controls(window: HWND, context: &mut DialogContext) -> Result<(
             ID_APPLY,
             font,
         )?;
-        create_label(
-            window,
-            instance,
-            "各数値は%で入力（サイズ100 = 等倍）",
-            95,
-            353,
-            470,
-            20,
-            0,
-            font,
-        )?;
-
         for (text, x, width, id) in [
             ("新規…", 20, 100, ID_NEW),
             ("保存", 130, 100, ID_SAVE),
-            ("フォントを削除", 240, 140, ID_DELETE),
+            ("プロファイル削除", 240, 140, ID_DELETE),
             ("特殊文字…", 630, 120, ID_SPECIAL),
         ] {
             create_child(
@@ -761,7 +790,29 @@ unsafe fn create_edit(
 unsafe fn handle_command(window: HWND, context: &mut DialogContext, id: usize, notification: u32) {
     match (id, notification) {
         (ID_FONT, CBN_DROPDOWN) => unsafe {
+            rebuild_font_combo(context);
             configure_font_dropdown(context.controls.font);
+        },
+        (ID_ROW_ADD, BN_CLICKED) => match unsafe { apply_editor_fields(context) } {
+            Ok(()) => unsafe {
+                context.model.add_selected_adjustment();
+                context.refreshing = true;
+                refresh_list(context);
+                refresh_editor_fields(context);
+                context.refreshing = false;
+                refresh_preview(context);
+            },
+            Err(error) => unsafe { show_error(Some(window), &error) },
+        },
+        (ID_ROW_REMOVE, BN_CLICKED) => unsafe {
+            let rows = selected_table_rows(context.controls.list);
+            if context.model.remove_adjustments_for_table_rows(&rows) > 0 {
+                context.refreshing = true;
+                refresh_list(context);
+                refresh_editor_fields(context);
+                context.refreshing = false;
+                refresh_preview(context);
+            }
         },
         (ID_PROFILE, CBN_SELCHANGE) if !context.refreshing => {
             if let Err(error) = unsafe { apply_editor_fields(context) } {
@@ -777,7 +828,7 @@ unsafe fn handle_command(window: HWND, context: &mut DialogContext, id: usize, n
         }
         (ID_APPLY, BN_CLICKED) => match unsafe { apply_editor_fields(context) } {
             Ok(()) => unsafe {
-                refresh_selected_list_row(context);
+                refresh_selected_list_rows(context);
                 refresh_preview(context);
             },
             Err(error) => unsafe { show_error(Some(window), &error) },
@@ -797,19 +848,13 @@ unsafe fn handle_command(window: HWND, context: &mut DialogContext, id: usize, n
         (ID_SAVE, BN_CLICKED) => match unsafe {
             commit_and_save(context).and_then(|()| scan_private_fonts_after_save(context))
         } {
-            Ok(pending_font_count) => unsafe {
-                let message = if pending_font_count == 0 {
-                    "プロファイルを保存しました。".to_owned()
-                } else {
-                    format!(
-                        "プロファイルを保存しました。追加フォント{pending_font_count}件は、AviUtl2の再起動後にFontManagerへ登録されます。"
-                    )
-                };
+            Ok(outcome) => unsafe {
+                let message = save_confirmation_message(&outcome);
                 let message = wide(&message);
                 MessageBoxW(
                     Some(window),
                     PCWSTR(message.as_ptr()),
-                    w!("合成フォント"),
+                    w!("プロファイルの保存"),
                     MB_OK | MB_ICONINFORMATION,
                 );
                 refresh_all(context);
@@ -853,6 +898,26 @@ unsafe fn handle_command(window: HWND, context: &mut DialogContext, id: usize, n
     }
 }
 
+fn save_confirmation_message(outcome: &FontStageOutcome) -> String {
+    let font_status = if outcome.source_file_count == 0 {
+        String::new()
+    } else if outcome.added_file_count == 0 {
+        format!(
+            "\n追加フォント{}件は次回起動用フォルダーに配置済みです。",
+            outcome.existing_file_count
+        )
+    } else {
+        format!(
+            "\n追加フォント{}件を次回起動用フォルダーに配置しました。使用するにはAviUtl2を再起動してください。",
+            outcome.added_file_count
+        )
+    };
+
+    format!(
+        "プロファイルを保存しました。{font_status}\n\nこのビルドはFontManagerへ合成プロファイルを追加登録しません。\nプロファイル名は標準のフォント一覧には表示されません。\n「合成フォント字幕」またはcompositefont.decorate(...)から使用してください。"
+    )
+}
+
 unsafe fn commit_and_save(context: &mut DialogContext) -> Result<(), String> {
     unsafe { apply_editor_fields(context)? };
     let document = context.model.document().clone();
@@ -861,26 +926,28 @@ unsafe fn commit_and_save(context: &mut DialogContext) -> Result<(), String> {
     Ok(())
 }
 
-fn scan_private_fonts_after_save(context: &mut DialogContext) -> Result<usize, String> {
-    // AviUtl2 rejects register_font_collection outside plugin initialization. The directory is
-    // therefore the pending manifest consumed by register_initial_fonts on the next launch.
-    let pending_font_count = context
+fn scan_private_fonts_after_save(context: &mut DialogContext) -> Result<FontStageOutcome, String> {
+    let outcome = context
         .font_registration
         .lock()
         .map_err(|_| "profile was saved, but font registration state is poisoned".to_owned())?
-        .pending_font_file_count()
-        .map_err(|error| format!("profile was saved, but private font scan failed: {error}"))?;
+        .stage_fonts_for_next_launch()
+        .map_err(|error| format!("profile was saved, but private font staging failed: {error}"))?;
 
-    if pending_font_count == 0 {
-        let _ = aviutl2::logger::write_info_log(
-            "Composite Font: Save button found no unregistered private font files",
-        );
+    if outcome.source_file_count == 0 {
+        let _ = aviutl2::logger::write_info_log(&format!(
+            "Composite Font: Save button found no private font files in {}",
+            font_collection::font_directory().display()
+        ));
     } else {
-        let _ = aviutl2::logger::write_warn_log(&format!(
-            "Composite Font: Save button staged {pending_font_count} additive private font file(s); AviUtl2 only accepts registerFontCollection during initialization, so restart is required"
+        let _ = aviutl2::logger::write_info_log(&format!(
+            "Composite Font: Save button copied {} new private font file(s) to {}; {} file(s) already existed; restart is required",
+            outcome.added_file_count,
+            font_collection::host_font_directory().display(),
+            outcome.existing_file_count
         ));
     }
-    Ok(pending_font_count)
+    Ok(outcome)
 }
 
 unsafe fn apply_editor_fields(context: &mut DialogContext) -> Result<(), String> {
@@ -901,7 +968,12 @@ unsafe fn apply_editor_fields(context: &mut DialogContext) -> Result<(), String>
         &unsafe { window_text(context.controls.horizontal_scale) },
         "水平比率",
     )?;
-    context.model.update_selected_adjustment(
+    let mut rows = unsafe { selected_table_rows(context.controls.list) };
+    if rows.is_empty() {
+        rows.push(context.model.selected_table_row());
+    }
+    context.model.update_table_rows(
+        &rows,
         font,
         size,
         baseline,
@@ -946,27 +1018,22 @@ unsafe fn refresh_profile_combo(context: &DialogContext) {
 unsafe fn refresh_list(context: &DialogContext) {
     unsafe { SendMessageW(context.controls.list, LVM_DELETEALLITEMS, None, None) };
     let profile = context.model.selected_profile();
-    for (row_index, row) in CATEGORY_ROWS.iter().enumerate() {
-        let adjustment = profile.adjustment_for(row.class);
-        let font = if adjustment.font_family.is_empty() {
-            "（変更なし）"
-        } else {
-            &adjustment.font_family
-        };
+    let mut row_index = 0;
+    for row in CATEGORY_ROWS {
         unsafe {
-            list_insert_row(
+            insert_adjustment_row(
                 context.controls.list,
                 row_index,
-                [
-                    row.label.to_owned(),
-                    font.to_owned(),
-                    percent(adjustment.size_ratio),
-                    percent(adjustment.baseline_shift_em),
-                    percent(adjustment.tracking_adjust_em),
-                    percent(adjustment.vertical_scale_ratio),
-                    percent(adjustment.horizontal_scale_ratio),
-                ],
+                row.label,
+                profile.adjustment_for(row.class),
             );
+        }
+        row_index += 1;
+        for adjustment in profile.fallbacks_for(row.class) {
+            unsafe {
+                insert_adjustment_row(context.controls.list, row_index, row.label, adjustment);
+            }
+            row_index += 1;
         }
     }
     let mut item = LVITEMW {
@@ -978,32 +1045,39 @@ unsafe fn refresh_list(context: &DialogContext) {
         SendMessageW(
             context.controls.list,
             LVM_SETITEMSTATE,
-            Some(WPARAM(context.model.selected_category_index())),
+            Some(WPARAM(context.model.selected_table_row())),
             Some(LPARAM((&mut item as *mut LVITEMW) as isize)),
         );
     }
 }
 
-unsafe fn refresh_selected_list_row(context: &DialogContext) {
-    let row = context.model.selected_category_index();
-    let adjustment = context.model.selected_adjustment();
-    let font = if adjustment.font_family.is_empty() {
-        "（変更なし）"
-    } else {
-        &adjustment.font_family
-    };
-    for (column, value) in [
-        font.to_owned(),
-        percent(adjustment.size_ratio),
-        percent(adjustment.baseline_shift_em),
-        percent(adjustment.tracking_adjust_em),
-        percent(adjustment.vertical_scale_ratio),
-        percent(adjustment.horizontal_scale_ratio),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        unsafe { list_set_cell(context.controls.list, row, column + 1, &value) };
+unsafe fn refresh_selected_list_rows(context: &DialogContext) {
+    let mut rows = unsafe { selected_table_rows(context.controls.list) };
+    if rows.is_empty() {
+        rows.push(context.model.selected_table_row());
+    }
+    for row in rows {
+        let Some(adjustment) = context.model.adjustment_for_table_row(row) else {
+            continue;
+        };
+        let font = if adjustment.font_family.is_empty() {
+            "（変更なし）"
+        } else {
+            &adjustment.font_family
+        };
+        for (column, value) in [
+            font.to_owned(),
+            percent(adjustment.size_ratio),
+            percent(adjustment.baseline_shift_em),
+            percent(adjustment.tracking_adjust_em),
+            percent(adjustment.vertical_scale_ratio),
+            percent(adjustment.horizontal_scale_ratio),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            unsafe { list_set_cell(context.controls.list, row, column + 1, &value) };
+        }
     }
 }
 
@@ -1013,6 +1087,7 @@ unsafe fn refresh_editor_fields(context: &DialogContext) {
     unsafe {
         set_text(context.controls.selected_category, row.label);
         set_text(context.controls.font, &adjustment.font_family);
+        refresh_row_remove_enabled(context);
         set_text(context.controls.size, &plain_percent(adjustment.size_ratio));
         set_text(
             context.controls.baseline,
@@ -1033,6 +1108,68 @@ unsafe fn refresh_editor_fields(context: &DialogContext) {
     }
 }
 
+unsafe fn insert_adjustment_row(
+    list: HWND,
+    row: usize,
+    label: &str,
+    adjustment: &compositefont_core::FontAdjustment,
+) {
+    let font = if adjustment.font_family.is_empty() {
+        "（変更なし）".to_owned()
+    } else {
+        adjustment.font_family.clone()
+    };
+    unsafe {
+        list_insert_row(
+            list,
+            row,
+            [
+                label.to_owned(),
+                font,
+                percent(adjustment.size_ratio),
+                percent(adjustment.baseline_shift_em),
+                percent(adjustment.tracking_adjust_em),
+                percent(adjustment.vertical_scale_ratio),
+                percent(adjustment.horizontal_scale_ratio),
+            ],
+        );
+    }
+}
+
+unsafe fn selected_table_rows(list: HWND) -> Vec<usize> {
+    let mut rows = Vec::new();
+    let mut current = -1_isize;
+    let item_count = unsafe { SendMessageW(list, LVM_GETITEMCOUNT, None, None).0.max(0) as usize };
+    for _ in 0..item_count {
+        let next = unsafe {
+            SendMessageW(
+                list,
+                LVM_GETNEXTITEM,
+                Some(WPARAM(current as usize)),
+                Some(LPARAM(LVNI_SELECTED as isize)),
+            )
+            .0
+        };
+        if next < 0 || next <= current {
+            break;
+        }
+        rows.push(next as usize);
+        current = next;
+    }
+    rows
+}
+
+unsafe fn refresh_row_remove_enabled(context: &DialogContext) {
+    let enabled = unsafe { selected_table_rows(context.controls.list) }
+        .into_iter()
+        .any(|row| context.model.is_additional_table_row(row));
+    let _ = unsafe { EnableWindow(context.controls.row_remove, enabled) };
+}
+
+fn select_table_row(model: &mut EditorModel, row: usize) -> bool {
+    model.select_table_row(row)
+}
+
 unsafe fn refresh_preview(context: &DialogContext) {
     if context.sample_visible && !context.controls.preview.is_invalid() {
         let _ = unsafe { InvalidateRect(Some(context.controls.preview), None, true) };
@@ -1048,6 +1185,14 @@ unsafe fn fill_font_combo(context: &DialogContext) {
                 fonts.push(family.clone());
             }
         }
+        for row in CATEGORY_ROWS {
+            fonts.extend(
+                profile
+                    .fallbacks_for(row.class)
+                    .iter()
+                    .map(|adjustment| adjustment.font_family.clone()),
+            );
+        }
     }
     if fonts.is_empty() {
         fonts.extend(["Yu Gothic UI".to_owned(), "Arial".to_owned()]);
@@ -1057,6 +1202,30 @@ unsafe fn fill_font_combo(context: &DialogContext) {
     for font in fonts {
         unsafe { combo_add(context.controls.font, &font) };
     }
+}
+
+fn query_font_names(edit_handle: &EditHandle) -> Vec<String> {
+    normalize_font_names(edit_handle.get_font_names())
+}
+
+fn normalize_font_names(mut names: Vec<String>) -> Vec<String> {
+    names.retain(|name| !name.is_empty());
+    names.sort_unstable();
+    names.dedup();
+    names
+}
+
+unsafe fn rebuild_font_combo(context: &mut DialogContext) {
+    let current_font = unsafe { window_text(context.controls.font) };
+    context.font_names = query_font_names(&context.edit_handle);
+
+    context.refreshing = true;
+    unsafe {
+        SendMessageW(context.controls.font, CB_RESETCONTENT, None, None);
+        fill_font_combo(context);
+        set_text(context.controls.font, &current_font);
+    }
+    context.refreshing = false;
 }
 
 unsafe fn configure_font_dropdown(combo: HWND) {
@@ -1157,7 +1326,7 @@ unsafe fn adjust_numeric_field(context: &mut DialogContext, wheel: WPARAM, curso
     }
 
     unsafe {
-        refresh_selected_list_row(context);
+        refresh_selected_list_rows(context);
         refresh_preview(context);
     }
     true
@@ -1504,7 +1673,54 @@ fn wide(value: &str) -> Vec<u16> {
 
 #[cfg(test)]
 mod tests {
-    use super::{numeric_wheel_value, scale_about, tracked_run_width, wheel_target_top};
+    use super::{
+        normalize_font_names, numeric_wheel_value, save_confirmation_message, scale_about,
+        select_table_row, tracked_run_width, wheel_target_top,
+    };
+    use crate::{font_collection::FontStageOutcome, model::EditorModel};
+    use compositefont_core::ProfileDocument;
+
+    #[test]
+    fn maps_repeated_character_class_rows_before_the_next_category() {
+        let mut model = EditorModel::new(ProfileDocument::with_builtin_default());
+        model.add_selected_adjustment();
+        model.add_selected_adjustment();
+        assert_eq!(model.selected_table_row(), 2);
+
+        assert!(select_table_row(&mut model, 1));
+        assert_eq!(model.selected_fallback_index(), Some(0));
+        assert!(select_table_row(&mut model, 3));
+        assert_eq!(model.selected_category_index(), 1);
+        assert_eq!(model.selected_fallback_index(), None);
+
+        model.add_selected_adjustment();
+        assert_eq!(model.selected_category_index(), 1);
+        assert_eq!(model.selected_fallback_index(), Some(0));
+        assert_eq!(model.selected_table_row(), 4);
+    }
+
+    #[test]
+    fn font_names_are_sorted_deduplicated_and_empty_names_are_removed() {
+        assert_eq!(
+            normalize_font_names(vec![
+                "Yu Gothic UI".to_owned(),
+                "FreeSans".to_owned(),
+                String::new(),
+                "FreeSans".to_owned(),
+            ]),
+            vec!["FreeSans".to_owned(), "Yu Gothic UI".to_owned()]
+        );
+    }
+
+    #[test]
+    fn save_message_explains_that_profiles_are_not_registered_as_fonts() {
+        let message = save_confirmation_message(&FontStageOutcome::default());
+
+        assert!(message.contains("FontManagerへ合成プロファイルを追加登録しません"));
+        assert!(message.contains("標準のフォント一覧には表示されません"));
+        assert!(message.contains("compositefont.decorate(...)"));
+        assert!(!message.contains("監視先"));
+    }
 
     #[test]
     fn tracking_changes_only_gaps_between_glyphs() {

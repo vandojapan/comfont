@@ -139,6 +139,9 @@ const fn neutral_scale_ratio() -> f64 {
 pub struct FontAdjustment {
     /// 空文字列は「現在のフォントを変更しない」を表す。
     pub font_family: String,
+    /// 先頭フォントに対象グリフがない場合に順番に試すフォントファミリー。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fallback_font_families: Vec<String>,
     /// 基準フォントサイズに掛ける倍率。`1.0`で変更なし。
     pub size_ratio: f64,
     /// 基準フォントサイズを1emとするベースライン移動量。
@@ -157,6 +160,7 @@ impl FontAdjustment {
     pub fn neutral() -> Self {
         Self {
             font_family: String::new(),
+            fallback_font_families: Vec::new(),
             size_ratio: 1.0,
             baseline_shift_em: 0.0,
             tracking_adjust_em: 0.0,
@@ -172,12 +176,27 @@ impl FontAdjustment {
 pub struct CompositeFontProfile {
     pub name: String,
     pub western: FontAdjustment,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub western_fallbacks: Vec<FontAdjustment>,
     pub hiragana: FontAdjustment,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hiragana_fallbacks: Vec<FontAdjustment>,
     pub katakana: FontAdjustment,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub katakana_fallbacks: Vec<FontAdjustment>,
     pub kanji: FontAdjustment,
+    /// 漢字用の追加調整セット。上から順にグリフの有無を確認する。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kanji_fallbacks: Vec<FontAdjustment>,
     pub digit: FontAdjustment,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub digit_fallbacks: Vec<FontAdjustment>,
     pub symbol: FontAdjustment,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub symbol_fallbacks: Vec<FontAdjustment>,
     pub other: FontAdjustment,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub other_fallbacks: Vec<FontAdjustment>,
 }
 
 impl CompositeFontProfile {
@@ -185,12 +204,19 @@ impl CompositeFontProfile {
         Self {
             name: DEFAULT_PROFILE_NAME.to_owned(),
             western: FontAdjustment::neutral(),
+            western_fallbacks: Vec::new(),
             hiragana: FontAdjustment::neutral(),
+            hiragana_fallbacks: Vec::new(),
             katakana: FontAdjustment::neutral(),
+            katakana_fallbacks: Vec::new(),
             kanji: FontAdjustment::neutral(),
+            kanji_fallbacks: Vec::new(),
             digit: FontAdjustment::neutral(),
+            digit_fallbacks: Vec::new(),
             symbol: FontAdjustment::neutral(),
+            symbol_fallbacks: Vec::new(),
             other: FontAdjustment::neutral(),
+            other_fallbacks: Vec::new(),
         }
     }
 
@@ -215,6 +241,30 @@ impl CompositeFontProfile {
             CharacterClass::Digit => &mut self.digit,
             CharacterClass::Symbol => &mut self.symbol,
             CharacterClass::Other => &mut self.other,
+        }
+    }
+
+    pub fn fallbacks_for(&self, class: CharacterClass) -> &[FontAdjustment] {
+        match class {
+            CharacterClass::Western => &self.western_fallbacks,
+            CharacterClass::Hiragana => &self.hiragana_fallbacks,
+            CharacterClass::Katakana => &self.katakana_fallbacks,
+            CharacterClass::Kanji => &self.kanji_fallbacks,
+            CharacterClass::Digit => &self.digit_fallbacks,
+            CharacterClass::Symbol => &self.symbol_fallbacks,
+            CharacterClass::Other => &self.other_fallbacks,
+        }
+    }
+
+    pub fn fallbacks_for_mut(&mut self, class: CharacterClass) -> &mut Vec<FontAdjustment> {
+        match class {
+            CharacterClass::Western => &mut self.western_fallbacks,
+            CharacterClass::Hiragana => &mut self.hiragana_fallbacks,
+            CharacterClass::Katakana => &mut self.katakana_fallbacks,
+            CharacterClass::Kanji => &mut self.kanji_fallbacks,
+            CharacterClass::Digit => &mut self.digit_fallbacks,
+            CharacterClass::Symbol => &mut self.symbol_fallbacks,
+            CharacterClass::Other => &mut self.other_fallbacks,
         }
     }
 
@@ -284,12 +334,18 @@ impl ProfileStore {
         codepoint: char,
         profile_name: Option<&str>,
     ) -> Result<ResolvedFont, ResolveError> {
-        let profile_name = profile_name.unwrap_or(DEFAULT_PROFILE_NAME);
-        let profile = self
-            .profiles
-            .get(profile_name)
-            .ok_or_else(|| ResolveError::ProfileNotFound(profile_name.to_owned()))?;
+        let profile = self.profile(profile_name)?;
         Ok(profile.resolve(codepoint))
+    }
+
+    pub fn profile(
+        &self,
+        profile_name: Option<&str>,
+    ) -> Result<&CompositeFontProfile, ResolveError> {
+        let profile_name = profile_name.unwrap_or(DEFAULT_PROFILE_NAME);
+        self.profiles
+            .get(profile_name)
+            .ok_or_else(|| ResolveError::ProfileNotFound(profile_name.to_owned()))
     }
 }
 
@@ -313,6 +369,7 @@ mod tests {
     fn adjustment(font_family: &str) -> FontAdjustment {
         FontAdjustment {
             font_family: font_family.to_owned(),
+            fallback_font_families: Vec::new(),
             size_ratio: 1.0,
             baseline_shift_em: 0.0,
             tracking_adjust_em: 0.0,
@@ -325,12 +382,19 @@ mod tests {
         CompositeFontProfile {
             name: "subtitle".to_owned(),
             western: adjustment("Inter"),
+            western_fallbacks: Vec::new(),
             hiragana: adjustment("Hiragana Font"),
+            hiragana_fallbacks: Vec::new(),
             katakana: adjustment("Katakana Font"),
+            katakana_fallbacks: Vec::new(),
             kanji: adjustment("Kanji Font"),
+            kanji_fallbacks: Vec::new(),
             digit: adjustment("Digit Font"),
+            digit_fallbacks: Vec::new(),
             symbol: adjustment("Symbol Font"),
+            symbol_fallbacks: Vec::new(),
             other: adjustment("Fallback Font"),
+            other_fallbacks: Vec::new(),
         }
     }
 

@@ -31,9 +31,7 @@ impl GenericPlugin for CompositeFontEditorPlugin {
         Ok(Self {
             document,
             profile_path,
-            font_registration: Arc::new(Mutex::new(
-                font_collection::FontRegistrationState::default(),
-            )),
+            font_registration: Arc::new(Mutex::new(font_collection::FontRegistrationState)),
             edit_handle: None,
         })
     }

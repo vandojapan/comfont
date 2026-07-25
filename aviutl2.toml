@@ -41,3 +41,13 @@ source = "scripts/@compositefont-test.obj2"
 
 [artifacts.compositefont-test-script.profiles.release]
 enabled = false
+
+[artifacts.compositefont-subtitle-object]
+destination = "Alias/合成フォント字幕.object"
+placement_method = "copy"
+
+[artifacts.compositefont-subtitle-object.profiles.debug]
+source = "scripts/合成フォント字幕.object"
+
+[artifacts.compositefont-subtitle-object.profiles.release]
+source = "scripts/合成フォント字幕.object"

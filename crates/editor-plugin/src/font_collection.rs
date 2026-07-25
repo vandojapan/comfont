@@ -1,90 +1,39 @@
 use std::{
-    collections::BTreeSet,
-    ffi::OsStr,
-    ffi::c_void,
-    os::windows::ffi::OsStrExt,
+    collections::BTreeMap,
+    ffi::{OsStr, OsString},
     path::{Path, PathBuf},
 };
 
-use windows::{
-    Win32::Graphics::DirectWrite::{
-        DWRITE_FACTORY_TYPE_SHARED, DWriteCreateFactory, IDWriteFactory, IDWriteFactory5,
-        IDWriteFontCollection,
-    },
-    core::{Interface, PCWSTR},
-};
-
-pub struct RegisteredFontCollection {
-    collection: IDWriteFontCollection,
-    font_file_count: usize,
-}
-
-pub type RegisterFontCollectionFn = unsafe extern "C" fn(*mut c_void);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FontRegistrationOutcome {
-    Added { font_file_count: usize },
-    Unchanged,
-    NoFonts,
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FontStageOutcome {
+    pub source_file_count: usize,
+    pub added_file_count: usize,
+    pub existing_file_count: usize,
 }
 
 #[derive(Default)]
-pub struct FontRegistrationState {
-    collections: Vec<RegisteredFontCollection>,
-    registered_paths: BTreeSet<PathBuf>,
-}
+pub struct FontRegistrationState;
 
 impl FontRegistrationState {
-    pub fn register_initial_fonts(
-        &mut self,
-        registrar: RegisterFontCollectionFn,
-    ) -> Result<FontRegistrationOutcome, String> {
-        let directory = ensure_font_directory()?;
-        let font_files = collect_font_files(&directory)?;
-        if font_files.is_empty() {
-            return Ok(FontRegistrationOutcome::NoFonts);
-        }
-        let new_font_files = unregistered_font_files(font_files, &self.registered_paths);
-        if new_font_files.is_empty() {
-            return Ok(FontRegistrationOutcome::Unchanged);
-        }
-
-        let registration = load_from_files(directory, &new_font_files)?;
-        let raw_collection = registration.collection().as_raw();
-        let font_file_count = registration.font_file_count();
-        unsafe {
-            registrar(raw_collection);
-        }
-        self.collections.push(registration);
-        self.registered_paths.extend(new_font_files);
-        Ok(FontRegistrationOutcome::Added { font_file_count })
-    }
-
-    pub fn pending_font_file_count(&self) -> Result<usize, String> {
-        let directory = ensure_font_directory()?;
-        let font_files = collect_font_files(&directory)?;
-        Ok(unregistered_font_files(font_files, &self.registered_paths).len())
-    }
-
-    pub fn registered_collection_count(&self) -> usize {
-        self.collections.len()
+    pub fn stage_fonts_for_next_launch(&mut self) -> Result<FontStageOutcome, String> {
+        let source = ensure_font_directory()?;
+        let destination = host_font_directory();
+        stage_font_files(&source, &destination)
     }
 }
 
-impl RegisteredFontCollection {
-    pub fn collection(&self) -> &IDWriteFontCollection {
-        &self.collection
-    }
-
-    pub fn font_file_count(&self) -> usize {
-        self.font_file_count
-    }
-}
-
+/// Composite Fontが追加フォントの投入元として監視するフォルダー。
 pub fn font_directory() -> PathBuf {
     aviutl2::config::app_data_path()
         .join("compositefont")
         .join("fonts")
+}
+
+/// AviUtl2が標準UIの構築前に読み込む公式のフォントフォルダー。
+pub fn host_font_directory() -> PathBuf {
+    aviutl2::config::app_data_path()
+        .join("Font")
+        .join("compositefont")
 }
 
 fn ensure_font_directory() -> Result<PathBuf, String> {
@@ -94,70 +43,57 @@ fn ensure_font_directory() -> Result<PathBuf, String> {
     Ok(directory)
 }
 
-fn load_from_files(
-    directory: PathBuf,
-    font_files: &[PathBuf],
-) -> Result<RegisteredFontCollection, String> {
-    let factory: IDWriteFactory5 = unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED) }
-        .map_err(|error| format!("DWriteCreateFactory failed: {error}"))?;
-    let base_factory: IDWriteFactory = factory
-        .cast()
-        .map_err(|error| format!("IDWriteFactory query failed: {error}"))?;
-    let builder = unsafe { factory.CreateFontSetBuilder() }
-        .map_err(|error| format!("CreateFontSetBuilder failed: {error}"))?;
+fn stage_font_files(source: &Path, destination: &Path) -> Result<FontStageOutcome, String> {
+    let font_files = collect_font_files(source)?;
+    if font_files.is_empty() {
+        return Ok(FontStageOutcome::default());
+    }
 
-    let mut loaded_count = 0;
+    let mut files_by_name = BTreeMap::<OsString, PathBuf>::new();
     for path in font_files {
-        let canonical_path = match path.canonicalize() {
-            Ok(path) => path,
-            Err(error) => {
-                log_skipped_font(path, &error.to_string());
-                continue;
+        let file_name = path
+            .file_name()
+            .ok_or_else(|| format!("font path has no file name: {}", path.display()))?
+            .to_owned();
+        if let Some(previous) = files_by_name.insert(file_name.clone(), path.clone()) {
+            return Err(format!(
+                "duplicate private font file name {}: {} and {}",
+                file_name.to_string_lossy(),
+                previous.display(),
+                path.display()
+            ));
+        }
+    }
+
+    std::fs::create_dir_all(destination)
+        .map_err(|error| format!("cannot create {}: {error}", destination.display()))?;
+
+    let mut outcome = FontStageOutcome {
+        source_file_count: files_by_name.len(),
+        ..Default::default()
+    };
+    for (file_name, source_path) in files_by_name {
+        let destination_path = destination.join(file_name);
+        if destination_path.exists() {
+            if !destination_path.is_file() {
+                return Err(format!(
+                    "font destination is not a file: {}",
+                    destination_path.display()
+                ));
             }
-        };
-        let wide_path = wide_null(canonical_path.as_os_str());
-        let font_file =
-            match unsafe { base_factory.CreateFontFileReference(PCWSTR(wide_path.as_ptr()), None) }
-            {
-                Ok(file) => file,
-                Err(error) => {
-                    log_skipped_font(path, &error.to_string());
-                    continue;
-                }
-            };
-        if let Err(error) = unsafe { builder.AddFontFile(&font_file) } {
-            log_skipped_font(path, &error.to_string());
+            outcome.existing_file_count += 1;
             continue;
         }
-        loaded_count += 1;
+        std::fs::copy(&source_path, &destination_path).map_err(|error| {
+            format!(
+                "cannot copy {} to {}: {error}",
+                source_path.display(),
+                destination_path.display()
+            )
+        })?;
+        outcome.added_file_count += 1;
     }
-
-    if loaded_count == 0 {
-        return Err(format!(
-            "none of the font files in {} could be loaded",
-            directory.display()
-        ));
-    }
-
-    let font_set = unsafe { builder.CreateFontSet() }
-        .map_err(|error| format!("CreateFontSet failed: {error}"))?;
-    let collection = unsafe { factory.CreateFontCollectionFromFontSet(&font_set) }
-        .map_err(|error| format!("CreateFontCollectionFromFontSet failed: {error}"))?;
-    let collection = collection
-        .cast::<IDWriteFontCollection>()
-        .map_err(|error| format!("IDWriteFontCollection query failed: {error}"))?;
-
-    Ok(RegisteredFontCollection {
-        collection,
-        font_file_count: loaded_count,
-    })
-}
-
-fn log_skipped_font(path: &Path, reason: &str) {
-    let _ = aviutl2::logger::write_warn_log(&format!(
-        "Composite Font: skipped private font {}: {reason}",
-        path.display()
-    ));
+    Ok(outcome)
 }
 
 fn collect_font_files(directory: &Path) -> Result<Vec<PathBuf>, String> {
@@ -165,16 +101,6 @@ fn collect_font_files(directory: &Path) -> Result<Vec<PathBuf>, String> {
     collect_font_files_recursive(directory, &mut result)?;
     result.sort_unstable();
     Ok(result)
-}
-
-fn unregistered_font_files(
-    font_files: Vec<PathBuf>,
-    registered_paths: &BTreeSet<PathBuf>,
-) -> Vec<PathBuf> {
-    font_files
-        .into_iter()
-        .filter(|path| !registered_paths.contains(path))
-        .collect()
 }
 
 fn collect_font_files_recursive(directory: &Path, result: &mut Vec<PathBuf>) -> Result<(), String> {
@@ -205,10 +131,6 @@ fn is_supported_font_path(path: &Path) -> bool {
         })
 }
 
-fn wide_null(value: &OsStr) -> Vec<u16> {
-    value.encode_wide().chain(std::iter::once(0)).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,7 +139,7 @@ mod tests {
     fn temporary_directory() -> PathBuf {
         static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
         std::env::temp_dir().join(format!(
-            "compositefont-font-loader-{}-{}",
+            "compositefont-font-staging-{}-{}",
             std::process::id(),
             NEXT_ID.fetch_add(1, Ordering::Relaxed)
         ))
@@ -252,19 +174,47 @@ mod tests {
     }
 
     #[test]
-    fn registered_paths_leave_only_new_font_files() {
-        let directory = temporary_directory();
-        std::fs::create_dir_all(&directory).unwrap();
-        let old_font = directory.join("old.ttf");
-        let new_font = directory.join("new.otf");
-        std::fs::write(&old_font, []).unwrap();
-        std::fs::write(&new_font, []).unwrap();
+    fn stages_new_fonts_without_overwriting_existing_files() {
+        let root = temporary_directory();
+        let source = root.join("source");
+        let destination = root.join("destination");
+        std::fs::create_dir_all(source.join("nested")).unwrap();
+        std::fs::write(source.join("nested/test.ttf"), [1, 2, 3]).unwrap();
 
-        let files = collect_font_files(&directory).unwrap();
-        let registered_paths = BTreeSet::from([old_font]);
-        let additions = unregistered_font_files(files, &registered_paths);
-        assert_eq!(additions, vec![new_font]);
+        let first = stage_font_files(&source, &destination).unwrap();
+        assert_eq!(first.source_file_count, 1);
+        assert_eq!(first.added_file_count, 1);
+        assert_eq!(first.existing_file_count, 0);
+        assert_eq!(
+            std::fs::read(destination.join("test.ttf")).unwrap(),
+            [1, 2, 3]
+        );
 
-        std::fs::remove_dir_all(directory).unwrap();
+        std::fs::write(source.join("nested/test.ttf"), [9, 9, 9]).unwrap();
+        let second = stage_font_files(&source, &destination).unwrap();
+        assert_eq!(second.added_file_count, 0);
+        assert_eq!(second.existing_file_count, 1);
+        assert_eq!(
+            std::fs::read(destination.join("test.ttf")).unwrap(),
+            [1, 2, 3]
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_duplicate_file_names_from_nested_source_directories() {
+        let root = temporary_directory();
+        let source = root.join("source");
+        let destination = root.join("destination");
+        std::fs::create_dir_all(source.join("a")).unwrap();
+        std::fs::create_dir_all(source.join("b")).unwrap();
+        std::fs::write(source.join("a/font.otf"), []).unwrap();
+        std::fs::write(source.join("b/font.otf"), []).unwrap();
+
+        let error = stage_font_files(&source, &destination).unwrap_err();
+        assert!(error.contains("duplicate private font file name"));
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -124,6 +124,7 @@ dependencies = [
  "aviutl2",
  "compositefont-core",
  "serde_json",
+ "windows",
 ]
 
 [[package]]

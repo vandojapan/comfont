@@ -1,24 +1,29 @@
+mod font_coverage;
+
 use aviutl2::module::{IntoScriptModuleReturnValue, ScriptModule, ScriptModuleFunctions};
-#[cfg(debug_assertions)]
-use compositefont_core::FontAdjustment;
 use compositefont_core::{
-    CompositeFontProfile, DEFAULT_PROFILE_NAME, PROFILE_SCHEMA_VERSION, ProfileDocument,
-    ProfileStore, ResolvedFont, codepoint_to_char, single_codepoint,
+    CompositeFontProfile, DEFAULT_PROFILE_NAME, FontAdjustment, PROFILE_SCHEMA_VERSION,
+    ProfileDocument, ProfileStore, ResolvedFont, classify_character, codepoint_to_char,
+    single_codepoint,
 };
+#[cfg(test)]
+use font_coverage::UnknownGlyphCoverage;
+use font_coverage::{FontManagerGlyphCoverage, GlyphCoverage};
 use std::{
     path::{Path, PathBuf},
     sync::Mutex,
     time::{Duration, Instant, SystemTime},
 };
 
-const API_VERSION: i32 = 3;
-#[cfg(debug_assertions)]
+const API_VERSION: i32 = 7;
+#[cfg(any(debug_assertions, test))]
 const INTEGRATION_TEST_PROFILE: &str = "integration-test";
 
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, test))]
 fn integration_test_profile() -> CompositeFontProfile {
     let western = FontAdjustment {
         font_family: "Arial Black".to_owned(),
+        fallback_font_families: Vec::new(),
         size_ratio: 1.0,
         baseline_shift_em: 0.0,
         tracking_adjust_em: 0.05,
@@ -27,22 +32,34 @@ fn integration_test_profile() -> CompositeFontProfile {
     };
     let japanese = FontAdjustment {
         font_family: "游明朝".to_owned(),
+        fallback_font_families: Vec::new(),
         size_ratio: 1.0,
         baseline_shift_em: 0.0,
         tracking_adjust_em: 0.1,
         vertical_scale_ratio: 0.9,
         horizontal_scale_ratio: 1.1,
     };
+    let mut kanji = japanese.clone();
+    kanji.font_family = "Arial".to_owned();
+    let mut adobe_kanji = japanese.clone();
+    adobe_kanji.font_family = "A P-OTF UD新ゴ Pr6N B".to_owned();
 
     CompositeFontProfile {
         name: INTEGRATION_TEST_PROFILE.to_owned(),
         western: western.clone(),
+        western_fallbacks: Vec::new(),
         hiragana: japanese.clone(),
+        hiragana_fallbacks: Vec::new(),
         katakana: japanese.clone(),
-        kanji: japanese.clone(),
+        katakana_fallbacks: Vec::new(),
+        kanji,
+        kanji_fallbacks: vec![adobe_kanji, japanese.clone()],
         digit: western,
+        digit_fallbacks: Vec::new(),
         symbol: japanese.clone(),
+        symbol_fallbacks: Vec::new(),
         other: japanese,
+        other_fallbacks: Vec::new(),
     }
 }
 
@@ -66,7 +83,7 @@ fn profile_path() -> PathBuf {
 }
 
 fn load_profile_store(path: &Path) -> Result<ProfileStore, String> {
-    let mut profiles = match std::fs::read(path) {
+    let profiles = match std::fs::read(path) {
         Ok(bytes) => {
             let document: ProfileDocument = serde_json::from_slice(&bytes)
                 .map_err(|error| format!("{}の形式が不正です: {error}", path.display()))?;
@@ -97,10 +114,12 @@ fn load_profile_store(path: &Path) -> Result<ProfileStore, String> {
     };
 
     #[cfg(debug_assertions)]
-    {
+    let profiles = {
+        let mut profiles = profiles;
         profiles.retain(|profile| profile.name != INTEGRATION_TEST_PROFILE);
         profiles.push(integration_test_profile());
-    }
+        profiles
+    };
     Ok(ProfileStore::from_profiles(profiles))
 }
 
@@ -130,9 +149,44 @@ impl ReloadableProfiles {
         &mut self,
         codepoint: char,
         profile_name: Option<&str>,
+        coverage: &mut dyn GlyphCoverage,
     ) -> Result<ResolvedFont, compositefont_core::ResolveError> {
         self.refresh_if_changed();
-        self.store.resolve(codepoint, profile_name)
+        let profile = self.store.profile(profile_name)?;
+        let mut resolved = profile.resolve(codepoint);
+        let (adjustment, candidate_index) =
+            resolved_adjustment_with_index(profile, codepoint, coverage);
+        resolved.font_family = adjustment.font_family;
+        resolved.size_ratio = adjustment.size_ratio;
+        resolved.baseline_shift_em = adjustment.baseline_shift_em;
+        resolved.tracking_adjust_em = adjustment.tracking_adjust_em;
+        resolved.vertical_scale_ratio = adjustment.vertical_scale_ratio;
+        resolved.horizontal_scale_ratio = adjustment.horizontal_scale_ratio;
+        if candidate_index > 0 {
+            resolved.rule_id = format!("{}:fallback:{candidate_index}", resolved.rule_id);
+        }
+        Ok(resolved)
+    }
+
+    fn decorate(
+        &mut self,
+        text: &str,
+        profile_name: Option<&str>,
+        base_font_size: Option<f64>,
+        base_char_spacing: Option<f64>,
+        coverage: &mut dyn GlyphCoverage,
+    ) -> String {
+        self.refresh_if_changed();
+        let Ok(profile) = self.store.profile(profile_name) else {
+            return text.to_owned();
+        };
+        decorate_plain_text_with_coverage(
+            text,
+            profile,
+            base_font_size,
+            base_char_spacing,
+            coverage,
+        )
     }
 
     fn refresh_if_changed(&mut self) {
@@ -152,6 +206,283 @@ impl ReloadableProfiles {
             }
         }
     }
+}
+
+#[derive(Clone)]
+struct TextRun<'text> {
+    text: &'text str,
+    adjustment: Option<FontAdjustment>,
+}
+
+#[cfg(test)]
+fn decorate_plain_text(
+    text: &str,
+    profile: &CompositeFontProfile,
+    base_font_size: Option<f64>,
+    base_char_spacing: Option<f64>,
+) -> String {
+    let mut coverage = UnknownGlyphCoverage;
+    decorate_plain_text_with_coverage(
+        text,
+        profile,
+        base_font_size,
+        base_char_spacing,
+        &mut coverage,
+    )
+}
+
+fn decorate_plain_text_with_coverage(
+    text: &str,
+    profile: &CompositeFontProfile,
+    base_font_size: Option<f64>,
+    base_char_spacing: Option<f64>,
+    coverage: &mut dyn GlyphCoverage,
+) -> String {
+    // PSDToolKit2のmodifierで字幕を壊さないことを優先する初期実装。
+    // 制御文字、ルビ、コメント、スクリプト、未知タグを区別せずfail-openする。
+    if text.contains('<') || text.is_empty() {
+        return text.to_owned();
+    }
+
+    let Some(runs) = collect_runs(text, profile, coverage) else {
+        return text.to_owned();
+    };
+    let base_font_size = base_font_size.filter(|value| value.is_finite() && *value > 0.0);
+    let base_char_spacing = base_char_spacing.filter(|value| value.is_finite());
+    let mut decorated = String::with_capacity(text.len() + runs.len() * 48);
+
+    for run in runs {
+        write_run(&mut decorated, run, base_font_size, base_char_spacing);
+    }
+
+    decorated
+}
+
+fn collect_runs<'text>(
+    text: &'text str,
+    profile: &CompositeFontProfile,
+    coverage: &mut dyn GlyphCoverage,
+) -> Option<Vec<TextRun<'text>>> {
+    let mut runs = Vec::new();
+    let mut current_start = 0;
+    let mut current_adjustment: Option<FontAdjustment> = None;
+
+    for (index, character) in text.char_indices() {
+        if matches!(character, '\r' | '\n') {
+            if let Some(adjustment) = current_adjustment.take() {
+                runs.push(TextRun {
+                    text: &text[current_start..index],
+                    adjustment: Some(adjustment),
+                });
+            }
+            let end = index + character.len_utf8();
+            runs.push(TextRun {
+                text: &text[index..end],
+                adjustment: None,
+            });
+            current_start = end;
+            continue;
+        }
+
+        let adjustment = resolved_adjustment(profile, character, coverage);
+        if !is_safe_adjustment(&adjustment) {
+            return None;
+        }
+
+        match current_adjustment {
+            Some(ref current) if current != &adjustment => {
+                runs.push(TextRun {
+                    text: &text[current_start..index],
+                    adjustment: current_adjustment.take(),
+                });
+                current_start = index;
+                current_adjustment = Some(adjustment);
+            }
+            None => current_adjustment = Some(adjustment),
+            Some(_) => {}
+        }
+    }
+
+    if let Some(adjustment) = current_adjustment {
+        runs.push(TextRun {
+            text: &text[current_start..],
+            adjustment: Some(adjustment),
+        });
+    }
+
+    Some(runs)
+}
+
+fn resolved_adjustment(
+    profile: &CompositeFontProfile,
+    character: char,
+    coverage: &mut dyn GlyphCoverage,
+) -> FontAdjustment {
+    resolved_adjustment_with_index(profile, character, coverage).0
+}
+
+fn resolved_adjustment_with_index(
+    profile: &CompositeFontProfile,
+    character: char,
+    coverage: &mut dyn GlyphCoverage,
+) -> (FontAdjustment, usize) {
+    let class = classify_character(character);
+
+    let mut last = (FontAdjustment::neutral(), 0);
+    let mut first_unknown = None;
+    for (index, adjustment) in adjustments_for_class(profile, class)
+        .into_iter()
+        .enumerate()
+    {
+        if adjustment.font_family.is_empty() {
+            continue;
+        }
+        let result = coverage.has_glyph(&adjustment.font_family, character);
+        last = (adjustment, index);
+        match result {
+            Some(true) => return last,
+            Some(false) => {}
+            None if first_unknown.is_none() => first_unknown = Some(last.clone()),
+            None => {}
+        }
+    }
+    first_unknown.unwrap_or(last)
+}
+
+fn adjustments_for_class(
+    profile: &CompositeFontProfile,
+    class: compositefont_core::CharacterClass,
+) -> Vec<FontAdjustment> {
+    let mut primary = profile.adjustment_for(class).clone();
+    let legacy = std::mem::take(&mut primary.fallback_font_families);
+    let fallbacks = profile.fallbacks_for(class);
+    let mut candidates = Vec::with_capacity(1 + fallbacks.len() + legacy.len());
+    candidates.push(primary.clone());
+    candidates.extend(fallbacks.iter().cloned().map(|mut adjustment| {
+        adjustment.fallback_font_families.clear();
+        adjustment
+    }));
+    candidates.extend(legacy.into_iter().map(|family| {
+        let mut adjustment = primary.clone();
+        adjustment.font_family = family;
+        adjustment
+    }));
+    candidates
+}
+
+fn is_safe_adjustment(adjustment: &FontAdjustment) -> bool {
+    !adjustment
+        .font_family
+        .chars()
+        .any(|character| matches!(character, '<' | '>' | ',') || character.is_control())
+        && adjustment.size_ratio.is_finite()
+        && adjustment.size_ratio > 0.0
+        && adjustment.baseline_shift_em.is_finite()
+        && adjustment.tracking_adjust_em.is_finite()
+        && adjustment.vertical_scale_ratio.is_finite()
+        && adjustment.vertical_scale_ratio > 0.0
+        && adjustment.horizontal_scale_ratio.is_finite()
+        && adjustment.horizontal_scale_ratio > 0.0
+}
+
+fn write_run(
+    output: &mut String,
+    run: TextRun<'_>,
+    base_font_size: Option<f64>,
+    base_char_spacing: Option<f64>,
+) {
+    let Some(adjustment) = run.adjustment.as_ref() else {
+        output.push_str(run.text);
+        return;
+    };
+    let has_font = !adjustment.font_family.is_empty();
+    let has_size = !approximately_equal(adjustment.size_ratio, 1.0);
+    let has_tracking = base_font_size.is_some()
+        && base_char_spacing.is_some()
+        && !approximately_equal(adjustment.tracking_adjust_em, 0.0);
+    let has_horizontal = !approximately_equal(adjustment.horizontal_scale_ratio, 1.0);
+    let has_vertical = !approximately_equal(adjustment.vertical_scale_ratio, 1.0);
+    let has_baseline =
+        base_font_size.is_some() && !approximately_equal(adjustment.baseline_shift_em, 0.0);
+
+    if has_font {
+        output.push_str("<@");
+        output.push_str(&adjustment.font_family);
+        output.push('>');
+    }
+    if has_size {
+        output.push_str("<s*");
+        output.push_str(&format_control_number(adjustment.size_ratio));
+        output.push('>');
+    }
+    if has_tracking {
+        output.push_str("<gw");
+        output.push_str(&format_control_number(
+            base_char_spacing.unwrap_or_default()
+                + base_font_size.unwrap_or_default() * adjustment.tracking_adjust_em,
+        ));
+        output.push('>');
+    }
+    if has_horizontal {
+        output.push_str("<tw");
+        output.push_str(&format_control_number(adjustment.horizontal_scale_ratio));
+        output.push('>');
+    }
+    if has_vertical {
+        output.push_str("<th");
+        output.push_str(&format_control_number(adjustment.vertical_scale_ratio));
+        output.push('>');
+    }
+    if has_baseline {
+        let shift = -base_font_size.unwrap_or_default() * adjustment.baseline_shift_em;
+        output.push_str("<p+0,");
+        if shift >= 0.0 {
+            output.push('+');
+        }
+        output.push_str(&format_control_number(shift));
+        output.push('>');
+    }
+
+    output.push_str(run.text);
+
+    if has_baseline {
+        output.push_str("<p>");
+    }
+    if has_vertical {
+        output.push_str("<th>");
+    }
+    if has_horizontal {
+        output.push_str("<tw>");
+    }
+    if has_tracking {
+        output.push_str("<gw>");
+    }
+    if has_size {
+        output.push_str("<s>");
+    }
+    if has_font {
+        output.push_str("<@>");
+    }
+}
+
+fn approximately_equal(left: f64, right: f64) -> bool {
+    (left - right).abs() < 1e-9
+}
+
+fn format_control_number(value: f64) -> String {
+    let value = if value.abs() < 0.000_000_5 {
+        0.0
+    } else {
+        value
+    };
+    let mut formatted = format!("{value:.6}");
+    while formatted.ends_with('0') {
+        formatted.pop();
+    }
+    if formatted.ends_with('.') {
+        formatted.pop();
+    }
+    formatted
 }
 
 fn modified_time(path: &Path) -> Option<SystemTime> {
@@ -224,26 +555,55 @@ impl CompositeFontModule {
         &self,
         character: String,
         profile: Option<String>,
+        section: &aviutl2::generic::ReadSection,
     ) -> aviutl2::AnyResult<ScriptResolvedFont> {
         let codepoint = single_codepoint(&character)?;
+        let mut coverage = FontManagerGlyphCoverage::new(section);
         let mut profiles = self
             .profiles
             .lock()
             .map_err(|_| anyhow::anyhow!("composite font profile lock was poisoned"))?;
-        Ok(profiles.resolve(codepoint, profile.as_deref())?.into())
+        Ok(profiles
+            .resolve(codepoint, profile.as_deref(), &mut coverage)?
+            .into())
     }
 
     fn resolve_codepoint(
         &self,
         codepoint: u32,
         profile: Option<String>,
+        section: &aviutl2::generic::ReadSection,
     ) -> aviutl2::AnyResult<ScriptResolvedFont> {
         let codepoint = codepoint_to_char(codepoint)?;
+        let mut coverage = FontManagerGlyphCoverage::new(section);
         let mut profiles = self
             .profiles
             .lock()
             .map_err(|_| anyhow::anyhow!("composite font profile lock was poisoned"))?;
-        Ok(profiles.resolve(codepoint, profile.as_deref())?.into())
+        Ok(profiles
+            .resolve(codepoint, profile.as_deref(), &mut coverage)?
+            .into())
+    }
+
+    fn decorate(
+        &self,
+        text: String,
+        profile: Option<String>,
+        base_font_size: Option<f64>,
+        base_char_spacing: Option<f64>,
+        section: &aviutl2::generic::ReadSection,
+    ) -> String {
+        let mut coverage = FontManagerGlyphCoverage::new(section);
+        let Ok(mut profiles) = self.profiles.lock() else {
+            return text;
+        };
+        profiles.decorate(
+            &text,
+            profile.as_deref(),
+            base_font_size,
+            base_char_spacing,
+            &mut coverage,
+        )
     }
 }
 
@@ -252,7 +612,62 @@ aviutl2::register_script_module!(CompositeFontModule);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Default)]
+    struct TestCoverage {
+        values: HashMap<(String, char), bool>,
+    }
+
+    impl GlyphCoverage for TestCoverage {
+        fn has_glyph(&mut self, font_family: &str, character: char) -> Option<bool> {
+            self.values
+                .get(&(font_family.to_owned(), character))
+                .copied()
+        }
+    }
+
+    fn adjustment(
+        font_family: &str,
+        size_ratio: f64,
+        baseline_shift_em: f64,
+        tracking_adjust_em: f64,
+        vertical_scale_ratio: f64,
+        horizontal_scale_ratio: f64,
+    ) -> FontAdjustment {
+        FontAdjustment {
+            font_family: font_family.to_owned(),
+            fallback_font_families: Vec::new(),
+            size_ratio,
+            baseline_shift_em,
+            tracking_adjust_em,
+            vertical_scale_ratio,
+            horizontal_scale_ratio,
+        }
+    }
+
+    fn decoration_profile() -> CompositeFontProfile {
+        let latin = adjustment("Latin", 1.15, 0.02, 0.05, 0.9, 1.1);
+        let japanese = adjustment("Japanese", 1.0, 0.0, 0.0, 1.0, 1.0);
+        CompositeFontProfile {
+            name: "subtitle".to_owned(),
+            western: latin.clone(),
+            western_fallbacks: Vec::new(),
+            hiragana: japanese.clone(),
+            hiragana_fallbacks: Vec::new(),
+            katakana: japanese.clone(),
+            katakana_fallbacks: Vec::new(),
+            kanji: japanese.clone(),
+            kanji_fallbacks: Vec::new(),
+            digit: latin,
+            digit_fallbacks: Vec::new(),
+            symbol: japanese.clone(),
+            symbol_fallbacks: Vec::new(),
+            other: japanese,
+            other_fallbacks: Vec::new(),
+        }
+    }
 
     fn temporary_profile_path() -> PathBuf {
         static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
@@ -297,6 +712,78 @@ mod tests {
     }
 
     #[test]
+    fn selects_first_font_with_the_requested_glyph() {
+        let mut profile = decoration_profile();
+        profile.kanji = adjustment("Std", 1.0, 0.0, 0.0, 1.0, 1.0);
+        profile.kanji_fallbacks = vec![
+            adjustment("Pr6", 1.05, 0.01, 0.02, 0.98, 1.02),
+            adjustment("Last", 1.0, 0.0, 0.0, 1.0, 1.0),
+        ];
+        let mut coverage = TestCoverage::default();
+        coverage.values.insert(("Std".to_owned(), '𠮷'), false);
+        coverage.values.insert(("Pr6".to_owned(), '𠮷'), true);
+
+        let (selected, index) = resolved_adjustment_with_index(&profile, '𠮷', &mut coverage);
+        assert_eq!(selected.font_family, "Pr6");
+        assert_eq!(selected.size_ratio, 1.05);
+        assert_eq!(index, 1);
+    }
+
+    #[test]
+    fn selects_fallbacks_for_non_kanji_character_classes() {
+        let mut profile = decoration_profile();
+        profile.hiragana = adjustment("Kana Std", 1.0, 0.0, 0.0, 1.0, 1.0);
+        profile.hiragana_fallbacks =
+            vec![adjustment("Kana Extended", 1.08, 0.01, 0.02, 0.95, 1.05)];
+        let mut coverage = TestCoverage::default();
+        coverage.values.insert(("Kana Std".to_owned(), 'あ'), false);
+        coverage
+            .values
+            .insert(("Kana Extended".to_owned(), 'あ'), true);
+
+        let (selected, index) = resolved_adjustment_with_index(&profile, 'あ', &mut coverage);
+        assert_eq!(selected.font_family, "Kana Extended");
+        assert_eq!(selected.size_ratio, 1.08);
+        assert_eq!(selected.horizontal_scale_ratio, 1.05);
+        assert_eq!(index, 1);
+    }
+
+    #[test]
+    fn continues_after_an_unknown_font_when_a_later_font_has_the_glyph() {
+        let mut profile = decoration_profile();
+        profile.kanji = adjustment("Missing", 1.0, 0.0, 0.0, 1.0, 1.0);
+        profile.kanji_fallbacks = vec![adjustment("Pr6", 1.0, 0.0, 0.0, 1.0, 1.0)];
+        let mut coverage = TestCoverage::default();
+        coverage.values.insert(("Pr6".to_owned(), '𠮷'), true);
+
+        let (selected, index) = resolved_adjustment_with_index(&profile, '𠮷', &mut coverage);
+        assert_eq!(selected.font_family, "Pr6");
+        assert_eq!(index, 1);
+    }
+
+    #[test]
+    fn decoration_splits_kanji_runs_at_fallback_boundaries() {
+        let mut profile = decoration_profile();
+        profile.kanji.font_family = "Std".to_owned();
+        profile.kanji_fallbacks = vec![adjustment("Pr6", 1.0, 0.0, 0.0, 1.0, 1.0)];
+        let mut coverage = TestCoverage::default();
+        coverage.values.insert(("Std".to_owned(), '国'), true);
+        coverage.values.insert(("Std".to_owned(), '𠮷'), false);
+        coverage.values.insert(("Pr6".to_owned(), '𠮷'), true);
+
+        assert_eq!(
+            decorate_plain_text_with_coverage(
+                "国𠮷国",
+                &profile,
+                Some(100.0),
+                Some(0.0),
+                &mut coverage,
+            ),
+            "<@Std>国<@><@Pr6>𠮷<@><@Std>国<@>"
+        );
+    }
+
+    #[test]
     fn integration_profile_resolves_all_categories() {
         let profile = integration_test_profile();
 
@@ -309,7 +796,12 @@ mod tests {
         assert_eq!(profile.resolve('あ').vertical_scale_ratio, 0.9);
         assert_eq!(profile.resolve('あ').horizontal_scale_ratio, 1.1);
         assert_eq!(profile.resolve('カ').font_family, "游明朝");
-        assert_eq!(profile.resolve('日').font_family, "游明朝");
+        assert_eq!(profile.resolve('日').font_family, "Arial");
+        assert_eq!(profile.kanji_fallbacks.len(), 2);
+        assert_eq!(
+            profile.kanji_fallbacks[0].font_family,
+            "A P-OTF UD新ゴ Pr6N B"
+        );
         assert_eq!(profile.resolve('1').font_family, "Arial Black");
         assert_eq!(profile.resolve('。').font_family, "游明朝");
         assert_eq!(profile.resolve('Ж').font_family, "游明朝");
@@ -329,5 +821,136 @@ mod tests {
         );
 
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn empty_and_neutral_text_are_unchanged() {
+        assert_eq!(
+            decorate_plain_text("", &decoration_profile(), Some(100.0), Some(0.0)),
+            ""
+        );
+        assert_eq!(
+            decorate_plain_text(
+                "国LINE123",
+                &CompositeFontProfile::neutral_default(),
+                Some(100.0),
+                Some(0.0),
+            ),
+            "国LINE123"
+        );
+    }
+
+    #[test]
+    fn decorates_and_coalesces_adjacent_visual_runs() {
+        let decorated =
+            decorate_plain_text("国LINE123国", &decoration_profile(), Some(100.0), Some(3.0));
+
+        assert_eq!(
+            decorated,
+            concat!(
+                "<@Japanese>国<@>",
+                "<@Latin><s*1.15><gw8><tw1.1><th0.9><p+0,-2>",
+                "LINE123",
+                "<p><th><tw><gw><s><@>",
+                "<@Japanese>国<@>"
+            )
+        );
+    }
+
+    #[test]
+    fn omits_absolute_adjustments_without_base_metrics() {
+        assert_eq!(
+            decorate_plain_text("A", &decoration_profile(), None, None),
+            "<@Latin><s*1.15><tw1.1><th0.9>A<th><tw><s><@>"
+        );
+    }
+
+    #[test]
+    fn closes_runs_around_line_breaks() {
+        assert_eq!(
+            decorate_plain_text("A\r\n国\nB", &decoration_profile(), Some(100.0), Some(0.0),),
+            concat!(
+                "<@Latin><s*1.15><gw5><tw1.1><th0.9><p+0,-2>A",
+                "<p><th><tw><gw><s><@>\r\n",
+                "<@Japanese>国<@>\n",
+                "<@Latin><s*1.15><gw5><tw1.1><th0.9><p+0,-2>B",
+                "<p><th><tw><gw><s><@>"
+            )
+        );
+    }
+
+    #[test]
+    fn possible_control_text_is_returned_byte_for_byte() {
+        let profile = decoration_profile();
+        for text in [
+            "<#ff0000>国LINE<#>",
+            "<@User Font>LINE<@>",
+            "<s120>国<s>",
+            "</>漢字<!>かんじ</>",
+            "<// comment > remains opaque //>国",
+            "<?obj.rz=obj.time*360?>国",
+            "<?=string.format(\"%d\", obj.frame)?>",
+            "<future-control>国",
+            "閉じていない<",
+            "1 < 2",
+        ] {
+            assert_eq!(
+                decorate_plain_text(text, &profile, Some(100.0), Some(0.0)),
+                text
+            );
+        }
+    }
+
+    #[test]
+    fn generated_text_is_idempotent() {
+        let profile = decoration_profile();
+        let once = decorate_plain_text("国LINE", &profile, Some(100.0), Some(0.0));
+        let twice = decorate_plain_text(&once, &profile, Some(100.0), Some(0.0));
+        assert_eq!(twice, once);
+    }
+
+    #[test]
+    fn unsafe_used_adjustment_fails_open() {
+        let mut profile = decoration_profile();
+        profile.western.font_family = "Unsafe,Font".to_owned();
+        assert_eq!(
+            decorate_plain_text("ABC", &profile, Some(100.0), Some(0.0)),
+            "ABC"
+        );
+        profile.western.font_family = "Unsafe\nFont".to_owned();
+        assert_eq!(
+            decorate_plain_text("ABC", &profile, Some(100.0), Some(0.0)),
+            "ABC"
+        );
+    }
+
+    #[test]
+    fn greater_than_and_fullwidth_angle_brackets_are_plain_text() {
+        let mut profile = decoration_profile();
+        profile.symbol = profile.western.clone();
+        let decorated = decorate_plain_text("A>B＜C＞", &profile, None, None);
+        assert!(decorated.contains("A>B＜C＞"));
+        assert_ne!(decorated, "A>B＜C＞");
+    }
+
+    #[test]
+    fn missing_profile_fails_open() {
+        let mut profiles = ReloadableProfiles {
+            store: ProfileStore::from_profiles([decoration_profile()]),
+            path: PathBuf::from("missing-profile-file.json"),
+            observed_modified: None,
+            last_checked: Instant::now(),
+        };
+        let mut coverage = UnknownGlyphCoverage;
+        assert_eq!(
+            profiles.decorate(
+                "国LINE",
+                Some("missing"),
+                Some(100.0),
+                Some(0.0),
+                &mut coverage,
+            ),
+            "国LINE"
+        );
     }
 }

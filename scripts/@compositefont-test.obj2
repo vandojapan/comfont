@@ -13,6 +13,16 @@ local entries = {
     {"3", "U+0033"},
 }
 
+if obj.frame == 0 and compositefont.api_version() >= 4 then
+    local decorated = compositefont.decorate(
+        "国LINE123国",
+        "integration-test",
+        96,
+        0
+    )
+    print("@info", "[compositefont-decorate-test] " .. decorated)
+end
+
 local ox = 0
 obj.multiobject(#entries, function()
     local entry = entries[obj.index + 1]
