@@ -102,4 +102,26 @@ mod tests {
 
         std::fs::remove_file(path).unwrap();
     }
+
+    #[test]
+    fn loads_profiles_created_before_scale_fields_existed() {
+        let path = temporary_path("legacy-scale-defaults");
+        let document = ProfileDocument::with_builtin_default();
+        let mut json = serde_json::to_value(document).unwrap();
+        let profile = json["profiles"][0].as_object_mut().unwrap();
+        for category in [
+            "western", "hiragana", "katakana", "kanji", "digit", "symbol", "other",
+        ] {
+            let adjustment = profile[category].as_object_mut().unwrap();
+            adjustment.remove("vertical_scale_ratio");
+            adjustment.remove("horizontal_scale_ratio");
+        }
+        std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
+
+        let loaded = load_document(&path).unwrap();
+        assert_eq!(loaded.profiles[0].western.vertical_scale_ratio, 1.0);
+        assert_eq!(loaded.profiles[0].western.horizontal_scale_ratio, 1.0);
+
+        std::fs::remove_file(path).unwrap();
+    }
 }

@@ -153,11 +153,15 @@ impl EditorModel {
         size_percent: f64,
         baseline_percent: f64,
         tracking_percent: f64,
+        vertical_scale_percent: f64,
+        horizontal_scale_percent: f64,
     ) -> Result<(), String> {
         for (label, value) in [
             ("サイズ", size_percent),
             ("ベースライン", baseline_percent),
             ("字送り", tracking_percent),
+            ("垂直比率", vertical_scale_percent),
+            ("水平比率", horizontal_scale_percent),
         ] {
             if !value.is_finite() {
                 return Err(format!("{label}には有限の数値を入力してください。"));
@@ -166,6 +170,9 @@ impl EditorModel {
         if size_percent <= 0.0 {
             return Err("サイズは0より大きい値にしてください。".to_owned());
         }
+        if vertical_scale_percent <= 0.0 || horizontal_scale_percent <= 0.0 {
+            return Err("垂直比率と水平比率は0より大きい値にしてください。".to_owned());
+        }
 
         let class = CATEGORY_ROWS[self.selected_category].class;
         *self.selected_profile_mut().adjustment_for_mut(class) = FontAdjustment {
@@ -173,6 +180,8 @@ impl EditorModel {
             size_ratio: size_percent / 100.0,
             baseline_shift_em: baseline_percent / 100.0,
             tracking_adjust_em: tracking_percent / 100.0,
+            vertical_scale_ratio: vertical_scale_percent / 100.0,
+            horizontal_scale_ratio: horizontal_scale_percent / 100.0,
         };
         Ok(())
     }
@@ -216,7 +225,7 @@ mod tests {
         let mut model = EditorModel::new(ProfileDocument::with_builtin_default());
         model.select_category(4);
         model
-            .update_selected_adjustment("DIN 2014".to_owned(), 115.0, -2.0, 3.5)
+            .update_selected_adjustment("DIN 2014".to_owned(), 115.0, -2.0, 3.5, 92.0, 108.0)
             .unwrap();
 
         let western = &model.selected_profile().western;
@@ -224,6 +233,8 @@ mod tests {
         assert_eq!(western.size_ratio, 1.15);
         assert_eq!(western.baseline_shift_em, -0.02);
         assert_eq!(western.tracking_adjust_em, 0.035);
+        assert_eq!(western.vertical_scale_ratio, 0.92);
+        assert_eq!(western.horizontal_scale_ratio, 1.08);
     }
 
     #[test]

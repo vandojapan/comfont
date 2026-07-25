@@ -11,7 +11,7 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-const API_VERSION: i32 = 2;
+const API_VERSION: i32 = 3;
 #[cfg(debug_assertions)]
 const INTEGRATION_TEST_PROFILE: &str = "integration-test";
 
@@ -21,13 +21,17 @@ fn integration_test_profile() -> CompositeFontProfile {
         font_family: "Arial Black".to_owned(),
         size_ratio: 1.0,
         baseline_shift_em: 0.0,
-        tracking_adjust_em: 0.0,
+        tracking_adjust_em: 0.05,
+        vertical_scale_ratio: 1.1,
+        horizontal_scale_ratio: 0.9,
     };
     let japanese = FontAdjustment {
         font_family: "游明朝".to_owned(),
         size_ratio: 1.0,
         baseline_shift_em: 0.0,
-        tracking_adjust_em: 0.0,
+        tracking_adjust_em: 0.1,
+        vertical_scale_ratio: 0.9,
+        horizontal_scale_ratio: 1.1,
     };
 
     CompositeFontProfile {
@@ -177,6 +181,8 @@ impl IntoScriptModuleReturnValue for ScriptResolvedFont {
             value.size_ratio,
             value.baseline_shift_em,
             value.tracking_adjust_em,
+            value.vertical_scale_ratio,
+            value.horizontal_scale_ratio,
             value.category,
             value.rule_id,
         )
@@ -258,18 +264,20 @@ mod tests {
     }
 
     #[test]
-    fn result_is_exported_as_six_lua_values() {
+    fn result_is_exported_as_eight_lua_values() {
         let resolved = ResolvedFont {
             font_family: "Inter".to_owned(),
             size_ratio: 0.95,
             baseline_shift_em: 0.02,
             tracking_adjust_em: -0.01,
+            vertical_scale_ratio: 0.9,
+            horizontal_scale_ratio: 1.1,
             category: "latin".to_owned(),
             rule_id: "latin-uppercase".to_owned(),
         };
         let values = ScriptResolvedFont(resolved).into_return_values().unwrap();
 
-        assert_eq!(values.len(), 6);
+        assert_eq!(values.len(), 8);
         assert!(matches!(
             &values[0],
             aviutl2::module::ScriptModuleReturnValue::String(value) if value == "Inter"
@@ -278,6 +286,14 @@ mod tests {
             values[1],
             aviutl2::module::ScriptModuleReturnValue::Float(value) if value == 0.95
         ));
+        assert!(matches!(
+            values[4],
+            aviutl2::module::ScriptModuleReturnValue::Float(value) if value == 0.9
+        ));
+        assert!(matches!(
+            values[5],
+            aviutl2::module::ScriptModuleReturnValue::Float(value) if value == 1.1
+        ));
     }
 
     #[test]
@@ -285,7 +301,13 @@ mod tests {
         let profile = integration_test_profile();
 
         assert_eq!(profile.resolve('A').font_family, "Arial Black");
+        assert_eq!(profile.resolve('A').tracking_adjust_em, 0.05);
+        assert_eq!(profile.resolve('A').vertical_scale_ratio, 1.1);
+        assert_eq!(profile.resolve('A').horizontal_scale_ratio, 0.9);
         assert_eq!(profile.resolve('あ').font_family, "游明朝");
+        assert_eq!(profile.resolve('あ').tracking_adjust_em, 0.1);
+        assert_eq!(profile.resolve('あ').vertical_scale_ratio, 0.9);
+        assert_eq!(profile.resolve('あ').horizontal_scale_ratio, 1.1);
         assert_eq!(profile.resolve('カ').font_family, "游明朝");
         assert_eq!(profile.resolve('日').font_family, "游明朝");
         assert_eq!(profile.resolve('1').font_family, "Arial Black");

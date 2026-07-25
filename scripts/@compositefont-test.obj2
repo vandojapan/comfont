@@ -17,7 +17,8 @@ local ox = 0
 obj.multiobject(#entries, function()
     local entry = entries[obj.index + 1]
     local character = entry[1]
-    local font, size_ratio, baseline_shift_em, tracking_adjust_em, category, rule_id =
+    local font, size_ratio, baseline_shift_em, tracking_adjust_em,
+        vertical_scale_ratio, horizontal_scale_ratio, category, rule_id =
         compositefont.resolve(character, "integration-test")
 
     obj.setfont(
@@ -33,15 +34,20 @@ obj.multiobject(#entries, function()
     )
     local applied_font, applied_size = obj.getfont()
     obj.load("text", character)
+    obj.sx = horizontal_scale_ratio
+    obj.sy = vertical_scale_ratio
     obj.ox = ox
     obj.oy = 96 * baseline_shift_em
-    ox = ox + obj.w
+    ox = ox + obj.w * horizontal_scale_ratio
+    if obj.index + 1 < #entries then
+        ox = ox + 96 * tracking_adjust_em
+    end
 
     if obj.frame == 0 then
         print(
             "@info",
             string.format(
-                "[compositefont-test] %s %s category=%s rule=%s resolved=%s applied=%s size=%.1f glyph=%dx%d",
+                "[compositefont-test] %s %s category=%s rule=%s resolved=%s applied=%s size=%.1f tracking=%.1f%% vertical=%.0f%% horizontal=%.0f%% glyph=%dx%d",
                 entry[2],
                 character,
                 category,
@@ -49,6 +55,9 @@ obj.multiobject(#entries, function()
                 font,
                 applied_font,
                 applied_size,
+                tracking_adjust_em * 100,
+                vertical_scale_ratio * 100,
+                horizontal_scale_ratio * 100,
                 obj.w,
                 obj.h
             )

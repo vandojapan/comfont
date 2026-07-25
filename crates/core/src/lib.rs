@@ -123,8 +123,14 @@ pub struct ResolvedFont {
     pub size_ratio: f64,
     pub baseline_shift_em: f64,
     pub tracking_adjust_em: f64,
+    pub vertical_scale_ratio: f64,
+    pub horizontal_scale_ratio: f64,
     pub category: String,
     pub rule_id: String,
+}
+
+const fn neutral_scale_ratio() -> f64 {
+    1.0
 }
 
 /// 1分類に適用するフォントと補正値。
@@ -139,6 +145,12 @@ pub struct FontAdjustment {
     pub baseline_shift_em: f64,
     /// 基準フォントサイズを1emとする字送り補正量。
     pub tracking_adjust_em: f64,
+    /// Illustratorの垂直比率に相当する倍率。`1.0`で変形なし。
+    #[serde(default = "neutral_scale_ratio")]
+    pub vertical_scale_ratio: f64,
+    /// Illustratorの水平比率に相当する倍率。`1.0`で変形なし。
+    #[serde(default = "neutral_scale_ratio")]
+    pub horizontal_scale_ratio: f64,
 }
 
 impl FontAdjustment {
@@ -148,6 +160,8 @@ impl FontAdjustment {
             size_ratio: 1.0,
             baseline_shift_em: 0.0,
             tracking_adjust_em: 0.0,
+            vertical_scale_ratio: 1.0,
+            horizontal_scale_ratio: 1.0,
         }
     }
 }
@@ -214,6 +228,8 @@ impl CompositeFontProfile {
             size_ratio: adjustment.size_ratio,
             baseline_shift_em: adjustment.baseline_shift_em,
             tracking_adjust_em: adjustment.tracking_adjust_em,
+            vertical_scale_ratio: adjustment.vertical_scale_ratio,
+            horizontal_scale_ratio: adjustment.horizontal_scale_ratio,
             category: class_name.to_owned(),
             rule_id: class_name.to_owned(),
         }
@@ -300,6 +316,8 @@ mod tests {
             size_ratio: 1.0,
             baseline_shift_em: 0.0,
             tracking_adjust_em: 0.0,
+            vertical_scale_ratio: 1.0,
+            horizontal_scale_ratio: 1.0,
         }
     }
 

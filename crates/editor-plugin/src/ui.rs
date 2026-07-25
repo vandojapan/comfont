@@ -3,42 +3,47 @@ use std::{ffi::c_void, mem::size_of, path::PathBuf, sync::OnceLock};
 use compositefont_core::ProfileDocument;
 use windows::{
     Win32::{
-        Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, SIZE, WPARAM},
+        Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM},
         Graphics::Gdi::{
             BeginPaint, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, COLOR_WINDOW, CreateFontW,
             CreatePen, DEFAULT_CHARSET, DEFAULT_GUI_FONT, DEFAULT_PITCH, DeleteObject, EndPaint,
-            EnumFontFamiliesExW, FIXED, FW_NORMAL, GDI_ERROR, GGO_METRICS, GLYPHMETRICS, GetDC,
-            GetGlyphOutlineW, GetStockObject, GetTextExtentPoint32W, GetTextMetricsW, HDC, HGDIOBJ,
-            InvalidateRect, LOGFONTW, LineTo, MAT2, MoveToEx, OUT_DEFAULT_PRECIS, PAINTSTRUCT,
-            PS_SOLID, Rectangle, ReleaseDC, SelectObject, SetBkMode, TEXTMETRICW, TRANSPARENT,
-            TextOutW,
+            EnumFontFamiliesExW, FIXED, FW_NORMAL, GDI_ERROR, GGO_METRICS, GLYPHMETRICS,
+            GM_ADVANCED, GetDC, GetGlyphOutlineW, GetStockObject, GetSysColorBrush,
+            GetTextExtentPoint32W, GetTextMetricsW, HDC, HGDIOBJ, InvalidateRect, LOGFONTW, LineTo,
+            MAT2, MoveToEx, OUT_DEFAULT_PRECIS, PAINTSTRUCT, PS_SOLID, ReleaseDC, SelectObject,
+            SetBkMode, SetGraphicsMode, SetWorldTransform, TEXTMETRICW, TRANSPARENT, TextOutW,
+            XFORM,
         },
         System::LibraryLoader::GetModuleHandleW,
         UI::{
             Controls::{
-                BST_CHECKED, CB_SETMINVISIBLE, ICC_LISTVIEW_CLASSES, INITCOMMONCONTROLSEX,
-                InitCommonControlsEx, LIST_VIEW_ITEM_STATE_FLAGS, LVCF_TEXT, LVCF_WIDTH, LVCOLUMNW,
-                LVIF_TEXT, LVIS_FOCUSED, LVIS_SELECTED, LVITEMW, LVM_DELETEALLITEMS,
-                LVM_INSERTCOLUMNW, LVM_INSERTITEMW, LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMSTATE,
-                LVM_SETITEMTEXTW, LVN_ITEMCHANGED, LVS_EX_DOUBLEBUFFER, LVS_EX_FULLROWSELECT,
-                LVS_EX_GRIDLINES, LVS_REPORT, LVS_SHOWSELALWAYS, LVS_SINGLESEL, NMLISTVIEW,
+                BST_CHECKED, CB_SETMINVISIBLE, COMBOBOXINFO, EM_SETSEL, GetComboBoxInfo,
+                ICC_LISTVIEW_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx,
+                LIST_VIEW_ITEM_STATE_FLAGS, LVCF_TEXT, LVCF_WIDTH, LVCOLUMNW, LVIF_TEXT,
+                LVIS_FOCUSED, LVIS_SELECTED, LVITEMW, LVM_DELETEALLITEMS, LVM_INSERTCOLUMNW,
+                LVM_INSERTITEMW, LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMSTATE, LVM_SETITEMTEXTW,
+                LVN_ITEMCHANGED, LVS_EX_DOUBLEBUFFER, LVS_EX_FULLROWSELECT, LVS_EX_GRIDLINES,
+                LVS_REPORT, LVS_SHOWSELALWAYS, LVS_SINGLESEL, NMLISTVIEW, ShowScrollBar,
                 WC_LISTVIEWW,
             },
             Input::KeyboardAndMouse::EnableWindow,
             WindowsAndMessaging::{
                 BM_GETCHECK, BN_CLICKED, BS_AUTOCHECKBOX, BS_DEFPUSHBUTTON, BS_GROUPBOX,
-                CB_ADDSTRING, CB_GETCURSEL, CB_RESETCONTENT, CB_SETCURSEL, CBN_SELCHANGE,
-                CBS_AUTOHSCROLL, CBS_DROPDOWN, CBS_DROPDOWNLIST, CBS_NOINTEGRALHEIGHT,
-                CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW,
-                DefWindowProcW, DestroyWindow, DispatchMessageW, ES_AUTOHSCROLL, GetMessageW,
-                GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, HMENU, IDC_ARROW,
-                IsDialogMessageW, IsWindow, LoadCursorW, MB_ICONERROR, MB_ICONINFORMATION, MB_OK,
-                MSG, MessageBoxW, RegisterClassW, SW_SHOW, SendMessageW, SetForegroundWindow,
-                SetWindowLongPtrW, SetWindowTextW, ShowWindow, TranslateMessage, WINDOW_EX_STYLE,
-                WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_NCCREATE, WM_NOTIFY, WM_PAINT,
-                WM_SETFONT, WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD, WS_EX_CLIENTEDGE,
-                WS_EX_CONTROLPARENT, WS_EX_DLGMODALFRAME, WS_GROUP, WS_OVERLAPPED, WS_SYSMENU,
-                WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+                CB_ADDSTRING, CB_GETCOUNT, CB_GETCURSEL, CB_GETDROPPEDSTATE, CB_RESETCONTENT,
+                CB_SETCURSEL, CBN_DROPDOWN, CBN_SELCHANGE, CBS_AUTOHSCROLL, CBS_DROPDOWN,
+                CBS_DROPDOWNLIST, CBS_NOINTEGRALHEIGHT, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW,
+                CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
+                ES_AUTOHSCROLL, GWL_STYLE, GetMessageW, GetWindowLongPtrW, GetWindowRect,
+                GetWindowTextLengthW, GetWindowTextW, HMENU, IDC_ARROW, IsDialogMessageW, IsWindow,
+                LB_GETTOPINDEX, LB_SETTOPINDEX, LoadCursorW, MB_ICONERROR, MB_ICONINFORMATION,
+                MB_OK, MSG, MessageBoxW, RegisterClassW, SB_VERT, SW_HIDE, SW_SHOW,
+                SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+                SendMessageW, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, SetWindowTextW,
+                ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND,
+                WM_CREATE, WM_CTLCOLORBTN, WM_CTLCOLORSTATIC, WM_MOUSEWHEEL, WM_NCCREATE,
+                WM_NOTIFY, WM_PAINT, WM_SETFONT, WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD,
+                WS_CLIPCHILDREN, WS_EX_CLIENTEDGE, WS_EX_CONTROLPARENT, WS_EX_DLGMODALFRAME,
+                WS_GROUP, WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
             },
         },
     },
@@ -51,8 +56,11 @@ use crate::{
 };
 
 const CLASS_NAME: PCWSTR = w!("CompositeFontEditorWindow");
+const PREVIEW_CLASS_NAME: PCWSTR = w!("CompositeFontPreviewWindow");
 const WINDOW_WIDTH: i32 = 800;
 const WINDOW_HEIGHT: i32 = 790;
+const PREVIEW_WIDTH: i32 = 730;
+const PREVIEW_HEIGHT: i32 = 190;
 
 const ID_PROFILE: usize = 100;
 const ID_UNIT: usize = 101;
@@ -63,6 +71,8 @@ const ID_SIZE: usize = 121;
 const ID_BASELINE: usize = 122;
 const ID_TRACKING: usize = 123;
 const ID_APPLY: usize = 124;
+const ID_VERTICAL_SCALE: usize = 125;
+const ID_HORIZONTAL_SCALE: usize = 126;
 const ID_NEW: usize = 130;
 const ID_SAVE: usize = 131;
 const ID_DELETE: usize = 132;
@@ -80,7 +90,10 @@ struct Controls {
     size: HWND,
     baseline: HWND,
     tracking: HWND,
+    vertical_scale: HWND,
+    horizontal_scale: HWND,
     sample_visible: HWND,
+    preview: HWND,
 }
 
 struct DialogContext {
@@ -121,7 +134,7 @@ pub fn show_editor(
             WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
             CLASS_NAME,
             w!("合成フォント"),
-            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
             WINDOW_WIDTH,
@@ -144,6 +157,16 @@ pub fn show_editor(
             let status = GetMessageW(&mut message, None, 0, 0).0;
             if status <= 0 {
                 break;
+            }
+            if message.message == WM_MOUSEWHEEL
+                && scroll_font_dropdown(context.controls.font, message.wParam)
+            {
+                continue;
+            }
+            if message.message == WM_MOUSEWHEEL
+                && adjust_numeric_field(&mut context, message.wParam, message.lParam)
+            {
+                continue;
             }
             if !IsDialogMessageW(window, &message).as_bool() {
                 let _ = TranslateMessage(&message);
@@ -168,13 +191,28 @@ fn register_window_class() -> Result<(), String> {
                 lpfnWndProc: Some(window_proc),
                 hInstance: instance,
                 hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
-                hbrBackground: windows::Win32::Graphics::Gdi::GetSysColorBrush(COLOR_WINDOW),
+                hbrBackground: GetSysColorBrush(COLOR_WINDOW),
                 lpszClassName: CLASS_NAME,
                 ..Default::default()
             };
             if RegisterClassW(&class) == 0 {
                 return Err(format!(
                     "合成フォント画面のウィンドウクラスを登録できません: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+            let preview_class = WNDCLASSW {
+                style: CS_HREDRAW | CS_VREDRAW,
+                lpfnWndProc: Some(preview_window_proc),
+                hInstance: instance,
+                hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
+                hbrBackground: GetSysColorBrush(COLOR_WINDOW),
+                lpszClassName: PREVIEW_CLASS_NAME,
+                ..Default::default()
+            };
+            if RegisterClassW(&preview_class) == 0 {
+                return Err(format!(
+                    "プレビュー用ウィンドウクラスを登録できません: {}",
                     std::io::Error::last_os_error()
                 ));
             }
@@ -245,7 +283,10 @@ unsafe extern "system" fn window_proc(
                     match unsafe { apply_editor_fields(context) } {
                         Ok(()) => {
                             if context.model.select_category(notification.iItem as usize) {
-                                unsafe { refresh_editor_fields(window, context) };
+                                unsafe {
+                                    refresh_editor_fields(context);
+                                    refresh_preview(context);
+                                }
                             }
                         }
                         Err(error) => unsafe { show_error(Some(window), &error) },
@@ -254,9 +295,10 @@ unsafe extern "system" fn window_proc(
             }
             LRESULT(0)
         }
-        WM_PAINT => {
-            unsafe { paint_preview(window, context) };
-            LRESULT(0)
+        WM_CTLCOLORSTATIC | WM_CTLCOLORBTN => {
+            let dc = HDC(wparam.0 as *mut c_void);
+            unsafe { SetBkMode(dc, TRANSPARENT) };
+            LRESULT(unsafe { GetSysColorBrush(COLOR_WINDOW) }.0 as isize)
         }
         WM_CLOSE => {
             let _ = unsafe { DestroyWindow(window) };
@@ -264,6 +306,35 @@ unsafe extern "system" fn window_proc(
         }
         _ => unsafe { DefWindowProcW(window, message, wparam, lparam) },
     }
+}
+
+unsafe extern "system" fn preview_window_proc(
+    window: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    if message == WM_NCCREATE {
+        let create = unsafe { &*(lparam.0 as *const CREATESTRUCTW) };
+        unsafe {
+            SetWindowLongPtrW(
+                window,
+                windows::Win32::UI::WindowsAndMessaging::GWLP_USERDATA,
+                create.lpCreateParams as isize,
+            );
+        }
+    }
+    let context = unsafe {
+        GetWindowLongPtrW(
+            window,
+            windows::Win32::UI::WindowsAndMessaging::GWLP_USERDATA,
+        ) as *const DialogContext
+    };
+    if message == WM_PAINT && !context.is_null() {
+        unsafe { paint_preview(window, &*context) };
+        return LRESULT(0);
+    }
+    unsafe { DefWindowProcW(window, message, wparam, lparam) }
 }
 
 unsafe fn create_controls(window: HWND, context: &mut DialogContext) -> Result<(), String> {
@@ -343,11 +414,13 @@ unsafe fn create_controls(window: HWND, context: &mut DialogContext) -> Result<(
             )),
         );
         for (index, (title, width)) in [
-            ("文字種", 105),
-            ("フォント", 280),
-            ("サイズ", 95),
-            ("ベース", 95),
-            ("字送り", 95),
+            ("文字種", 90),
+            ("フォント", 210),
+            ("サイズ", 70),
+            ("ベース", 70),
+            ("字送り", 70),
+            ("垂直比率", 85),
+            ("水平比率", 85),
         ]
         .into_iter()
         .enumerate()
@@ -375,12 +448,12 @@ unsafe fn create_controls(window: HWND, context: &mut DialogContext) -> Result<(
             "漢字",
             35,
             310,
-            75,
+            55,
             24,
             ID_SELECTED_CATEGORY,
             font,
         )?;
-        create_label(window, instance, "フォント", 115, 297, 80, 20, 0, font)?;
+        create_label(window, instance, "フォント", 100, 297, 70, 20, 0, font)?;
         context.controls.font = create_child(
             window,
             instance,
@@ -389,21 +462,28 @@ unsafe fn create_controls(window: HWND, context: &mut DialogContext) -> Result<(
             WS_CHILD
                 | WS_VISIBLE
                 | WS_TABSTOP
-                | WINDOW_STYLE((CBS_DROPDOWN | CBS_AUTOHSCROLL) as u32),
+                | WS_VSCROLL
+                | WINDOW_STYLE((CBS_DROPDOWN | CBS_AUTOHSCROLL | CBS_NOINTEGRALHEIGHT) as u32),
             WINDOW_EX_STYLE(0),
-            110,
+            95,
             318,
-            290,
+            190,
             220,
             ID_FONT,
             font,
         )?;
-        create_label(window, instance, "サイズ", 415, 297, 70, 20, 0, font)?;
-        context.controls.size = create_edit(window, instance, 410, 318, 80, ID_SIZE, font)?;
-        create_label(window, instance, "ベース", 500, 297, 70, 20, 0, font)?;
-        context.controls.baseline = create_edit(window, instance, 495, 318, 80, ID_BASELINE, font)?;
-        create_label(window, instance, "字送り", 585, 297, 70, 20, 0, font)?;
-        context.controls.tracking = create_edit(window, instance, 580, 318, 80, ID_TRACKING, font)?;
+        create_label(window, instance, "サイズ", 295, 297, 60, 20, 0, font)?;
+        context.controls.size = create_edit(window, instance, 290, 318, 60, ID_SIZE, font)?;
+        create_label(window, instance, "ベース", 360, 297, 60, 20, 0, font)?;
+        context.controls.baseline = create_edit(window, instance, 355, 318, 60, ID_BASELINE, font)?;
+        create_label(window, instance, "字送り", 425, 297, 60, 20, 0, font)?;
+        context.controls.tracking = create_edit(window, instance, 420, 318, 60, ID_TRACKING, font)?;
+        create_label(window, instance, "垂直比率", 490, 297, 65, 20, 0, font)?;
+        context.controls.vertical_scale =
+            create_edit(window, instance, 485, 318, 65, ID_VERTICAL_SCALE, font)?;
+        create_label(window, instance, "水平比率", 560, 297, 65, 20, 0, font)?;
+        context.controls.horizontal_scale =
+            create_edit(window, instance, 555, 318, 65, ID_HORIZONTAL_SCALE, font)?;
         create_child(
             window,
             instance,
@@ -411,9 +491,9 @@ unsafe fn create_controls(window: HWND, context: &mut DialogContext) -> Result<(
             "適用",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP,
             WINDOW_EX_STYLE(0),
-            670,
+            630,
             317,
-            65,
+            105,
             26,
             ID_APPLY,
             font,
@@ -422,9 +502,9 @@ unsafe fn create_controls(window: HWND, context: &mut DialogContext) -> Result<(
             window,
             instance,
             "各数値は%で入力（サイズ100 = 等倍）",
-            110,
+            95,
             353,
-            350,
+            470,
             20,
             0,
             font,
@@ -484,6 +564,8 @@ unsafe fn create_controls(window: HWND, context: &mut DialogContext) -> Result<(
             font,
         )?;
 
+        context.controls.preview = create_preview(window, instance, context)?;
+
         create_child(
             window,
             instance,
@@ -522,9 +604,34 @@ unsafe fn create_controls(window: HWND, context: &mut DialogContext) -> Result<(
             Some(WPARAM(12)),
             None,
         );
-        refresh_all(window, context);
+        configure_font_dropdown(context.controls.font);
+        refresh_all(context);
     }
     Ok(())
+}
+
+unsafe fn create_preview(
+    parent: HWND,
+    instance: HINSTANCE,
+    context: &mut DialogContext,
+) -> Result<HWND, String> {
+    unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE(0),
+            PREVIEW_CLASS_NAME,
+            w!(""),
+            WS_CHILD | WS_VISIBLE | WS_BORDER,
+            20,
+            475,
+            PREVIEW_WIDTH,
+            PREVIEW_HEIGHT,
+            Some(parent),
+            None,
+            Some(instance),
+            Some((context as *mut DialogContext).cast()),
+        )
+        .map_err(|error| format!("プレビュー領域を作成できません: {error}"))
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -630,6 +737,9 @@ unsafe fn create_edit(
 
 unsafe fn handle_command(window: HWND, context: &mut DialogContext, id: usize, notification: u32) {
     match (id, notification) {
+        (ID_FONT, CBN_DROPDOWN) => unsafe {
+            configure_font_dropdown(context.controls.font);
+        },
         (ID_PROFILE, CBN_SELCHANGE) if !context.refreshing => {
             if let Err(error) = unsafe { apply_editor_fields(context) } {
                 unsafe { show_error(Some(window), &error) };
@@ -639,11 +749,14 @@ unsafe fn handle_command(window: HWND, context: &mut DialogContext, id: usize, n
                 SendMessageW(context.controls.profile, CB_GETCURSEL, None, None).0 as usize
             };
             if context.model.select_profile(index) {
-                unsafe { refresh_all(window, context) };
+                unsafe { refresh_all(context) };
             }
         }
         (ID_APPLY, BN_CLICKED) => match unsafe { apply_editor_fields(context) } {
-            Ok(()) => unsafe { refresh_all(window, context) },
+            Ok(()) => unsafe {
+                refresh_selected_list_row(context);
+                refresh_preview(context);
+            },
             Err(error) => unsafe { show_error(Some(window), &error) },
         },
         (ID_NEW, BN_CLICKED) => {
@@ -652,10 +765,10 @@ unsafe fn handle_command(window: HWND, context: &mut DialogContext, id: usize, n
                 return;
             }
             context.model.create_profile();
-            unsafe { refresh_all(window, context) };
+            unsafe { refresh_all(context) };
         }
         (ID_DELETE, BN_CLICKED) => match context.model.delete_selected_profile() {
-            Ok(()) => unsafe { refresh_all(window, context) },
+            Ok(()) => unsafe { refresh_all(context) },
             Err(error) => unsafe { show_error(Some(window), &error) },
         },
         (ID_SAVE, BN_CLICKED) => match unsafe { commit_and_save(context) } {
@@ -666,7 +779,7 @@ unsafe fn handle_command(window: HWND, context: &mut DialogContext, id: usize, n
                     w!("合成フォント"),
                     MB_OK | MB_ICONINFORMATION,
                 );
-                refresh_all(window, context);
+                refresh_all(context);
             },
             Err(error) => unsafe { show_error(Some(window), &error) },
         },
@@ -675,7 +788,14 @@ unsafe fn handle_command(window: HWND, context: &mut DialogContext, id: usize, n
                 SendMessageW(context.controls.sample_visible, BM_GETCHECK, None, None).0 as u32
                     == BST_CHECKED.0
             };
-            let _ = unsafe { InvalidateRect(Some(window), None, true) };
+            unsafe {
+                if context.sample_visible {
+                    let _ = ShowWindow(context.controls.preview, SW_SHOW);
+                    refresh_preview(context);
+                } else {
+                    let _ = ShowWindow(context.controls.preview, SW_HIDE);
+                }
+            }
         }
         (ID_SPECIAL, BN_CLICKED) => unsafe {
             MessageBoxW(
@@ -718,9 +838,22 @@ unsafe fn apply_editor_fields(context: &mut DialogContext) -> Result<(), String>
         "ベースライン",
     )?;
     let tracking = parse_number(&unsafe { window_text(context.controls.tracking) }, "字送り")?;
-    context
-        .model
-        .update_selected_adjustment(font, size, baseline, tracking)
+    let vertical_scale = parse_number(
+        &unsafe { window_text(context.controls.vertical_scale) },
+        "垂直比率",
+    )?;
+    let horizontal_scale = parse_number(
+        &unsafe { window_text(context.controls.horizontal_scale) },
+        "水平比率",
+    )?;
+    context.model.update_selected_adjustment(
+        font,
+        size,
+        baseline,
+        tracking,
+        vertical_scale,
+        horizontal_scale,
+    )
 }
 
 fn parse_number(text: &str, label: &str) -> Result<f64, String> {
@@ -729,15 +862,15 @@ fn parse_number(text: &str, label: &str) -> Result<f64, String> {
         .map_err(|_| format!("{label}に数値を入力してください。"))
 }
 
-unsafe fn refresh_all(window: HWND, context: &mut DialogContext) {
+unsafe fn refresh_all(context: &mut DialogContext) {
     context.refreshing = true;
     unsafe {
         refresh_profile_combo(context);
         refresh_list(context);
-        refresh_editor_fields(window, context);
+        refresh_editor_fields(context);
     }
     context.refreshing = false;
-    let _ = unsafe { InvalidateRect(Some(window), None, true) };
+    unsafe { refresh_preview(context) };
 }
 
 unsafe fn refresh_profile_combo(context: &DialogContext) {
@@ -775,6 +908,8 @@ unsafe fn refresh_list(context: &DialogContext) {
                     percent(adjustment.size_ratio),
                     percent(adjustment.baseline_shift_em),
                     percent(adjustment.tracking_adjust_em),
+                    percent(adjustment.vertical_scale_ratio),
+                    percent(adjustment.horizontal_scale_ratio),
                 ],
             );
         }
@@ -794,7 +929,30 @@ unsafe fn refresh_list(context: &DialogContext) {
     }
 }
 
-unsafe fn refresh_editor_fields(window: HWND, context: &DialogContext) {
+unsafe fn refresh_selected_list_row(context: &DialogContext) {
+    let row = context.model.selected_category_index();
+    let adjustment = context.model.selected_adjustment();
+    let font = if adjustment.font_family.is_empty() {
+        "（変更なし）"
+    } else {
+        &adjustment.font_family
+    };
+    for (column, value) in [
+        font.to_owned(),
+        percent(adjustment.size_ratio),
+        percent(adjustment.baseline_shift_em),
+        percent(adjustment.tracking_adjust_em),
+        percent(adjustment.vertical_scale_ratio),
+        percent(adjustment.horizontal_scale_ratio),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        unsafe { list_set_cell(context.controls.list, row, column + 1, &value) };
+    }
+}
+
+unsafe fn refresh_editor_fields(context: &DialogContext) {
     let row = CATEGORY_ROWS[context.model.selected_category_index()];
     let adjustment = context.model.selected_adjustment();
     unsafe {
@@ -809,7 +967,20 @@ unsafe fn refresh_editor_fields(window: HWND, context: &DialogContext) {
             context.controls.tracking,
             &plain_percent(adjustment.tracking_adjust_em),
         );
-        let _ = InvalidateRect(Some(window), None, true);
+        set_text(
+            context.controls.vertical_scale,
+            &plain_percent(adjustment.vertical_scale_ratio),
+        );
+        set_text(
+            context.controls.horizontal_scale,
+            &plain_percent(adjustment.horizontal_scale_ratio),
+        );
+    }
+}
+
+unsafe fn refresh_preview(context: &DialogContext) {
+    if context.sample_visible && !context.controls.preview.is_invalid() {
+        let _ = unsafe { InvalidateRect(Some(context.controls.preview), None, true) };
     }
 }
 
@@ -831,6 +1002,138 @@ unsafe fn fill_font_combo(context: &DialogContext) {
     for font in fonts {
         unsafe { combo_add(context.controls.font, &font) };
     }
+}
+
+unsafe fn configure_font_dropdown(combo: HWND) {
+    let mut info = COMBOBOXINFO {
+        cbSize: size_of::<COMBOBOXINFO>() as u32,
+        ..Default::default()
+    };
+    if unsafe { GetComboBoxInfo(combo, &mut info) }.is_err() || info.hwndList.is_invalid() {
+        return;
+    }
+
+    let style = unsafe { GetWindowLongPtrW(info.hwndList, GWL_STYLE) };
+    unsafe {
+        SetWindowLongPtrW(info.hwndList, GWL_STYLE, style | WS_VSCROLL.0 as isize);
+        let _ = SetWindowPos(
+            info.hwndList,
+            None,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        );
+        let _ = ShowScrollBar(info.hwndList, SB_VERT, true);
+    }
+}
+
+unsafe fn scroll_font_dropdown(combo: HWND, wheel: WPARAM) -> bool {
+    if combo.is_invalid() || unsafe { SendMessageW(combo, CB_GETDROPPEDSTATE, None, None) }.0 == 0 {
+        return false;
+    }
+
+    let mut info = COMBOBOXINFO {
+        cbSize: size_of::<COMBOBOXINFO>() as u32,
+        ..Default::default()
+    };
+    if unsafe { GetComboBoxInfo(combo, &mut info) }.is_err() || info.hwndList.is_invalid() {
+        return false;
+    }
+
+    let delta = ((wheel.0 >> 16) as u16) as i16 as i32;
+    let current = unsafe { SendMessageW(info.hwndList, LB_GETTOPINDEX, None, None) }.0 as i32;
+    let count = unsafe { SendMessageW(combo, CB_GETCOUNT, None, None) }.0 as i32;
+    let target = wheel_target_top(current, count, delta);
+    unsafe {
+        SendMessageW(
+            info.hwndList,
+            LB_SETTOPINDEX,
+            Some(WPARAM(target as usize)),
+            None,
+        );
+        let _ = ShowScrollBar(info.hwndList, SB_VERT, true);
+    }
+    true
+}
+
+unsafe fn adjust_numeric_field(context: &mut DialogContext, wheel: WPARAM, cursor: LPARAM) -> bool {
+    let point = POINT {
+        x: (cursor.0 as u16) as i16 as i32,
+        y: ((cursor.0 >> 16) as u16) as i16 as i32,
+    };
+    let (control, minimum) = if unsafe { point_in_window(point, context.controls.size) } {
+        (context.controls.size, Some(1.0))
+    } else if unsafe { point_in_window(point, context.controls.baseline) } {
+        (context.controls.baseline, None)
+    } else if unsafe { point_in_window(point, context.controls.tracking) } {
+        (context.controls.tracking, None)
+    } else if unsafe { point_in_window(point, context.controls.vertical_scale) } {
+        (context.controls.vertical_scale, Some(1.0))
+    } else if unsafe { point_in_window(point, context.controls.horizontal_scale) } {
+        (context.controls.horizontal_scale, Some(1.0))
+    } else {
+        return false;
+    };
+
+    let original = unsafe { window_text(control) };
+    let Ok(current) = parse_number(&original, "") else {
+        return false;
+    };
+    let delta = ((wheel.0 >> 16) as u16) as i16 as i32;
+    let Some(value) = numeric_wheel_value(current, delta, minimum) else {
+        return true;
+    };
+    let text = plain_number(value);
+    unsafe {
+        set_text(control, &text);
+        SendMessageW(
+            control,
+            EM_SETSEL,
+            Some(WPARAM(text.encode_utf16().count())),
+            Some(LPARAM(text.encode_utf16().count() as isize)),
+        );
+    }
+
+    if unsafe { apply_editor_fields(context) }.is_err() {
+        unsafe { set_text(control, &original) };
+        return true;
+    }
+
+    unsafe {
+        refresh_selected_list_row(context);
+        refresh_preview(context);
+    }
+    true
+}
+
+unsafe fn point_in_window(point: POINT, window: HWND) -> bool {
+    let mut bounds = RECT::default();
+    unsafe { GetWindowRect(window, &mut bounds) }.is_ok()
+        && point.x >= bounds.left
+        && point.x < bounds.right
+        && point.y >= bounds.top
+        && point.y < bounds.bottom
+}
+
+fn numeric_wheel_value(current: f64, delta: i32, minimum: Option<f64>) -> Option<f64> {
+    if delta == 0 || !current.is_finite() {
+        return None;
+    }
+    let notches = delta.unsigned_abs().div_ceil(120) as f64;
+    let direction = if delta > 0 { 1.0 } else { -1.0 };
+    let value = current + direction * notches;
+    Some(minimum.map_or(value, |minimum| value.max(minimum)))
+}
+
+fn wheel_target_top(current: i32, count: i32, delta: i32) -> i32 {
+    if count <= 0 || delta == 0 {
+        return current.max(0);
+    }
+    let notches = delta.unsigned_abs().div_ceil(120) as i32;
+    let direction = if delta > 0 { -1 } else { 1 };
+    (current + direction * notches * 3).clamp(0, count - 1)
 }
 
 unsafe fn enumerate_system_fonts() -> Vec<String> {
@@ -893,7 +1196,7 @@ unsafe fn list_insert_column(list: HWND, index: usize, title: &str, width: i32) 
     }
 }
 
-unsafe fn list_insert_row(list: HWND, row: usize, values: [String; 5]) {
+unsafe fn list_insert_row(list: HWND, row: usize, values: [String; 7]) {
     for (column, value) in values.into_iter().enumerate() {
         let mut value = wide(&value);
         let mut item = LVITEMW {
@@ -915,6 +1218,23 @@ unsafe fn list_insert_row(list: HWND, row: usize, values: [String; 5]) {
                 Some(LPARAM((&mut item as *mut LVITEMW) as isize)),
             );
         }
+    }
+}
+
+unsafe fn list_set_cell(list: HWND, row: usize, column: usize, value: &str) {
+    let mut value = wide(value);
+    let mut item = LVITEMW {
+        iSubItem: column as i32,
+        pszText: PWSTR(value.as_mut_ptr()),
+        ..Default::default()
+    };
+    unsafe {
+        SendMessageW(
+            list,
+            LVM_SETITEMTEXTW,
+            Some(WPARAM(row)),
+            Some(LPARAM((&mut item as *mut LVITEMW) as isize)),
+        );
     }
 }
 
@@ -947,15 +1267,15 @@ unsafe fn paint_preview(window: HWND, context: &DialogContext) {
     let dc = unsafe { BeginPaint(window, &mut paint) };
     if context.sample_visible {
         unsafe {
-            let _ = Rectangle(dc, 20, 475, 750, 665);
             SetBkMode(dc, TRANSPARENT);
+            SetGraphicsMode(dc, GM_ADVANCED);
         }
         let baseline_pen = unsafe { CreatePen(PS_SOLID, 1, COLORREF(0x0000_40E0)) };
         let glyph_pen = unsafe { CreatePen(PS_SOLID, 1, COLORREF(0x00C0_C000)) };
         let old_pen = unsafe { SelectObject(dc, HGDIOBJ(baseline_pen.0)) };
         let profile = context.model.selected_profile();
-        let mut x = 35;
-        let mut y = 500;
+        let mut x = 15;
+        let mut y = 25;
         for row in CATEGORY_ROWS {
             let adjustment = profile.adjustment_for(row.class);
             let height = (42.0 * adjustment.size_ratio.clamp(0.5, 2.0)).round() as i32;
@@ -984,11 +1304,13 @@ unsafe fn paint_preview(window: HWND, context: &DialogContext) {
                 )
             };
             let old = unsafe { SelectObject(dc, HGDIOBJ(font.0)) };
-            let text: Vec<u16> = row.sample.encode_utf16().collect();
-            let mut extent = SIZE::default();
-            let _ = unsafe { GetTextExtentPoint32W(dc, &text, &mut extent) };
-            if x + extent.cx > 730 {
-                x = 35;
+            let tracking = (adjustment.tracking_adjust_em * height as f64).round() as i32;
+            let run_width = unsafe { measure_preview_run(dc, row.sample, tracking) };
+            let horizontal_scale = adjustment.horizontal_scale_ratio.clamp(0.01, 10.0);
+            let vertical_scale = adjustment.vertical_scale_ratio.clamp(0.01, 10.0);
+            let rendered_width = (run_width as f64 * horizontal_scale).round() as i32;
+            if x + rendered_width > PREVIEW_WIDTH - 20 {
+                x = 15;
                 y += 72;
             }
             let baseline_shift = (adjustment.baseline_shift_em * height as f64).round() as i32;
@@ -996,21 +1318,32 @@ unsafe fn paint_preview(window: HWND, context: &DialogContext) {
             let mut metrics = TEXTMETRICW::default();
             let _ = unsafe { GetTextMetricsW(dc, &mut metrics) };
             let baseline_y = draw_y + metrics.tmAscent;
+            let transform = scale_about(x, draw_y, horizontal_scale as f32, vertical_scale as f32);
             unsafe {
-                let _ = TextOutW(dc, x, draw_y, &text);
-                draw_preview_guides(
+                let _ = SetWorldTransform(dc, &transform);
+                draw_preview_run(
                     dc,
                     row.sample,
                     x,
+                    draw_y,
                     baseline_y,
-                    extent.cx,
+                    run_width,
+                    tracking,
                     HGDIOBJ(baseline_pen.0),
                     HGDIOBJ(glyph_pen.0),
+                );
+                let _ = SetWorldTransform(
+                    dc,
+                    &XFORM {
+                        eM11: 1.0,
+                        eM22: 1.0,
+                        ..Default::default()
+                    },
                 );
                 SelectObject(dc, old);
                 let _ = DeleteObject(HGDIOBJ(font.0));
             }
-            x += extent.cx + 22;
+            x += rendered_width + 22;
         }
         unsafe {
             SelectObject(dc, old_pen);
@@ -1021,13 +1354,41 @@ unsafe fn paint_preview(window: HWND, context: &DialogContext) {
     let _ = unsafe { EndPaint(window, &paint) };
 }
 
+fn scale_about(x: i32, y: i32, horizontal: f32, vertical: f32) -> XFORM {
+    XFORM {
+        eM11: horizontal,
+        eM22: vertical,
+        eDx: x as f32 * (1.0 - horizontal),
+        eDy: y as f32 * (1.0 - vertical),
+        ..Default::default()
+    }
+}
+
+unsafe fn measure_preview_run(dc: HDC, text: &str, tracking: i32) -> i32 {
+    let mut advances = Vec::with_capacity(text.chars().count());
+    for character in text.chars() {
+        let mut buffer = [0; 2];
+        let encoded = character.encode_utf16(&mut buffer);
+        let mut extent = SIZE::default();
+        let _ = unsafe { GetTextExtentPoint32W(dc, encoded, &mut extent) };
+        advances.push(extent.cx);
+    }
+    tracked_run_width(&advances, tracking)
+}
+
+fn tracked_run_width(advances: &[i32], tracking: i32) -> i32 {
+    advances.iter().sum::<i32>() + tracking * advances.len().saturating_sub(1) as i32
+}
+
 #[allow(clippy::too_many_arguments)]
-unsafe fn draw_preview_guides(
+unsafe fn draw_preview_run(
     dc: HDC,
     text: &str,
     x: i32,
+    draw_y: i32,
     baseline_y: i32,
     width: i32,
+    tracking: i32,
     baseline_pen: HGDIOBJ,
     glyph_pen: HGDIOBJ,
 ) {
@@ -1044,10 +1405,13 @@ unsafe fn draw_preview_guides(
         eM22: FIXED { value: 1, fract: 0 },
     };
     let mut cursor_x = x;
-    for character in text.chars() {
-        let encoded: Vec<u16> = character.encode_utf16(&mut [0; 2]).to_vec();
+    let character_count = text.chars().count();
+    for (index, character) in text.chars().enumerate() {
+        let mut buffer = [0; 2];
+        let encoded = character.encode_utf16(&mut buffer);
         let mut character_extent = SIZE::default();
-        let _ = unsafe { GetTextExtentPoint32W(dc, &encoded, &mut character_extent) };
+        let _ = unsafe { GetTextExtentPoint32W(dc, encoded, &mut character_extent) };
+        let _ = unsafe { TextOutW(dc, cursor_x, draw_y, encoded) };
 
         if character as u32 <= u16::MAX as u32 {
             let mut glyph = GLYPHMETRICS::default();
@@ -1071,6 +1435,9 @@ unsafe fn draw_preview_guides(
             }
         }
         cursor_x += character_extent.cx;
+        if index + 1 < character_count {
+            cursor_x += tracking;
+        }
     }
 }
 
@@ -1107,7 +1474,10 @@ fn percent(value: f64) -> String {
 }
 
 fn plain_percent(value: f64) -> String {
-    let value = value * 100.0;
+    plain_number(value * 100.0)
+}
+
+fn plain_number(value: f64) -> String {
     if (value - value.round()).abs() < 0.000_001 {
         format!("{value:.0}")
     } else {
@@ -1117,4 +1487,52 @@ fn plain_percent(value: f64) -> String {
 
 fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{numeric_wheel_value, scale_about, tracked_run_width, wheel_target_top};
+
+    #[test]
+    fn tracking_changes_only_gaps_between_glyphs() {
+        assert_eq!(tracked_run_width(&[10, 12, 8], 3), 36);
+        assert_eq!(tracked_run_width(&[10, 12, 8], -2), 26);
+        assert_eq!(tracked_run_width(&[10], 20), 10);
+    }
+
+    #[test]
+    fn scale_transform_keeps_the_preview_anchor_fixed() {
+        let transform = scale_about(20, 30, 1.25, 0.8);
+        assert_eq!(transform.eM11, 1.25);
+        assert_eq!(transform.eM22, 0.8);
+        assert_eq!(20.0 * transform.eM11 + transform.eDx, 20.0);
+        assert_eq!(30.0 * transform.eM22 + transform.eDy, 30.0);
+    }
+
+    #[test]
+    fn wheel_adjusts_numeric_values_one_point_per_notch() {
+        assert_eq!(numeric_wheel_value(100.0, 120, Some(1.0)), Some(101.0));
+        assert_eq!(numeric_wheel_value(100.0, -120, Some(1.0)), Some(99.0));
+        assert_eq!(numeric_wheel_value(0.0, 240, None), Some(2.0));
+    }
+
+    #[test]
+    fn size_wheel_does_not_reach_zero() {
+        assert_eq!(numeric_wheel_value(1.0, -120, Some(1.0)), Some(1.0));
+        assert_eq!(numeric_wheel_value(2.0, -240, Some(1.0)), Some(1.0));
+    }
+
+    #[test]
+    fn wheel_moves_three_rows_per_notch() {
+        assert_eq!(wheel_target_top(10, 100, -120), 13);
+        assert_eq!(wheel_target_top(10, 100, 120), 7);
+        assert_eq!(wheel_target_top(10, 100, -240), 16);
+    }
+
+    #[test]
+    fn wheel_stays_inside_font_list() {
+        assert_eq!(wheel_target_top(1, 100, 120), 0);
+        assert_eq!(wheel_target_top(98, 100, -120), 99);
+        assert_eq!(wheel_target_top(0, 0, -120), 0);
+    }
 }
