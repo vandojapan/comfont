@@ -1,0 +1,58 @@
+@CompositeFont Resolve Verification
+
+local compositefont = obj.module("compositefont")
+local entries = {
+    {"A", "U+0041"},
+    {"B", "U+0042"},
+    {"C", "U+0043"},
+    {"日", "U+65E5"},
+    {"本", "U+672C"},
+    {"語", "U+8A9E"},
+    {"1", "U+0031"},
+    {"2", "U+0032"},
+    {"3", "U+0033"},
+}
+
+local ox = 0
+obj.multiobject(#entries, function()
+    local entry = entries[obj.index + 1]
+    local character = entry[1]
+    local font, size_ratio, baseline_shift_em, tracking_adjust_em, category, rule_id =
+        compositefont.resolve(character, "integration-test")
+
+    obj.setfont(
+        font,
+        96 * size_ratio,
+        3,
+        0xffffff,
+        0x202020,
+        false,
+        false,
+        96 * tracking_adjust_em,
+        0
+    )
+    local applied_font, applied_size = obj.getfont()
+    obj.load("text", character)
+    obj.ox = ox
+    obj.oy = 96 * baseline_shift_em
+    ox = ox + obj.w
+
+    if obj.frame == 0 then
+        print(
+            "@info",
+            string.format(
+                "[compositefont-test] %s %s category=%s rule=%s resolved=%s applied=%s size=%.1f glyph=%dx%d",
+                entry[2],
+                character,
+                category,
+                rule_id,
+                font,
+                applied_font,
+                applied_size,
+                obj.w,
+                obj.h
+            )
+        )
+    end
+end)
+obj.ox = -ox / 2

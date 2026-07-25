@@ -1,0 +1,43 @@
+#:schema ./.aviutl2-cli/aviutl2.schema.json
+# 設定ファイルについては https://github.com/sevenc-nanashi/aviutl2-cli を参照してください。
+[project]
+id = "vandojapan.comfont"
+name = "comfont"
+version = "0.1.0"
+
+[development]
+aviutl2_version = "latest"
+
+[artifacts.compositefont-editor-aux2]
+destination = "Plugin/compositefont.aux2"
+placement_method = "copy"
+
+[artifacts.compositefont-editor-aux2.profiles.debug]
+build = "cargo build -p compositefont-editor-plugin"
+source = "target/debug/compositefont_editor.dll"
+
+[artifacts.compositefont-editor-aux2.profiles.release]
+build = "cargo build -p compositefont-editor-plugin --release"
+source = "target/release/compositefont_editor.dll"
+
+[artifacts.compositefont-mod2]
+destination = "Script/compositefont.mod2"
+placement_method = "copy"
+
+[artifacts.compositefont-mod2.profiles.debug]
+build = "cargo build -p compositefont-module-plugin"
+source = "target/debug/compositefont.dll"
+
+[artifacts.compositefont-mod2.profiles.release]
+build = "cargo build -p compositefont-module-plugin --release"
+source = "target/release/compositefont.dll"
+
+[artifacts.compositefont-test-script]
+destination = "Script/@compositefont-test.obj2"
+placement_method = "copy"
+
+[artifacts.compositefont-test-script.profiles.debug]
+source = "scripts/@compositefont-test.obj2"
+
+[artifacts.compositefont-test-script.profiles.release]
+enabled = false
