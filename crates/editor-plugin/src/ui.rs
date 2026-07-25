@@ -3,38 +3,42 @@ use std::{ffi::c_void, mem::size_of, path::PathBuf, sync::OnceLock};
 use compositefont_core::ProfileDocument;
 use windows::{
     Win32::{
-        Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, SIZE, WPARAM},
+        Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, SIZE, WPARAM},
         Graphics::Gdi::{
             BeginPaint, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, COLOR_WINDOW, CreateFontW,
-            DEFAULT_CHARSET, DEFAULT_GUI_FONT, DEFAULT_PITCH, DeleteObject, EndPaint,
-            EnumFontFamiliesExW, FW_NORMAL, GetDC, GetStockObject, GetTextExtentPoint32W, HGDIOBJ,
-            InvalidateRect, LOGFONTW, OUT_DEFAULT_PRECIS, PAINTSTRUCT, Rectangle, ReleaseDC,
-            SelectObject, SetBkMode, TEXTMETRICW, TRANSPARENT, TextOutW,
+            CreatePen, DEFAULT_CHARSET, DEFAULT_GUI_FONT, DEFAULT_PITCH, DeleteObject, EndPaint,
+            EnumFontFamiliesExW, FIXED, FW_NORMAL, GDI_ERROR, GGO_METRICS, GLYPHMETRICS, GetDC,
+            GetGlyphOutlineW, GetStockObject, GetTextExtentPoint32W, GetTextMetricsW, HDC, HGDIOBJ,
+            InvalidateRect, LOGFONTW, LineTo, MAT2, MoveToEx, OUT_DEFAULT_PRECIS, PAINTSTRUCT,
+            PS_SOLID, Rectangle, ReleaseDC, SelectObject, SetBkMode, TEXTMETRICW, TRANSPARENT,
+            TextOutW,
         },
         System::LibraryLoader::GetModuleHandleW,
         UI::{
             Controls::{
-                BST_CHECKED, ICC_LISTVIEW_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx,
-                LIST_VIEW_ITEM_STATE_FLAGS, LVCF_TEXT, LVCF_WIDTH, LVCOLUMNW, LVIF_TEXT,
-                LVIS_FOCUSED, LVIS_SELECTED, LVITEMW, LVM_DELETEALLITEMS, LVM_INSERTCOLUMNW,
-                LVM_INSERTITEMW, LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMSTATE, LVM_SETITEMTEXTW,
-                LVN_ITEMCHANGED, LVS_EX_DOUBLEBUFFER, LVS_EX_FULLROWSELECT, LVS_EX_GRIDLINES,
-                LVS_REPORT, LVS_SHOWSELALWAYS, LVS_SINGLESEL, NMLISTVIEW, WC_LISTVIEWW,
+                BST_CHECKED, CB_SETMINVISIBLE, ICC_LISTVIEW_CLASSES, INITCOMMONCONTROLSEX,
+                InitCommonControlsEx, LIST_VIEW_ITEM_STATE_FLAGS, LVCF_TEXT, LVCF_WIDTH, LVCOLUMNW,
+                LVIF_TEXT, LVIS_FOCUSED, LVIS_SELECTED, LVITEMW, LVM_DELETEALLITEMS,
+                LVM_INSERTCOLUMNW, LVM_INSERTITEMW, LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMSTATE,
+                LVM_SETITEMTEXTW, LVN_ITEMCHANGED, LVS_EX_DOUBLEBUFFER, LVS_EX_FULLROWSELECT,
+                LVS_EX_GRIDLINES, LVS_REPORT, LVS_SHOWSELALWAYS, LVS_SINGLESEL, NMLISTVIEW,
+                WC_LISTVIEWW,
             },
             Input::KeyboardAndMouse::EnableWindow,
             WindowsAndMessaging::{
                 BM_GETCHECK, BN_CLICKED, BS_AUTOCHECKBOX, BS_DEFPUSHBUTTON, BS_GROUPBOX,
                 CB_ADDSTRING, CB_GETCURSEL, CB_RESETCONTENT, CB_SETCURSEL, CBN_SELCHANGE,
-                CBS_AUTOHSCROLL, CBS_DROPDOWN, CBS_DROPDOWNLIST, CREATESTRUCTW, CS_HREDRAW,
-                CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow,
-                DispatchMessageW, ES_AUTOHSCROLL, GetMessageW, GetWindowLongPtrW,
-                GetWindowTextLengthW, GetWindowTextW, HMENU, IDC_ARROW, IsDialogMessageW, IsWindow,
-                LoadCursorW, MB_ICONERROR, MB_ICONINFORMATION, MB_OK, MSG, MessageBoxW,
-                RegisterClassW, SW_SHOW, SendMessageW, SetForegroundWindow, SetWindowLongPtrW,
-                SetWindowTextW, ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE,
-                WM_CLOSE, WM_COMMAND, WM_CREATE, WM_NCCREATE, WM_NOTIFY, WM_PAINT, WM_SETFONT,
-                WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD, WS_EX_CLIENTEDGE, WS_EX_CONTROLPARENT,
-                WS_EX_DLGMODALFRAME, WS_GROUP, WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
+                CBS_AUTOHSCROLL, CBS_DROPDOWN, CBS_DROPDOWNLIST, CBS_NOINTEGRALHEIGHT,
+                CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW,
+                DefWindowProcW, DestroyWindow, DispatchMessageW, ES_AUTOHSCROLL, GetMessageW,
+                GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, HMENU, IDC_ARROW,
+                IsDialogMessageW, IsWindow, LoadCursorW, MB_ICONERROR, MB_ICONINFORMATION, MB_OK,
+                MSG, MessageBoxW, RegisterClassW, SW_SHOW, SendMessageW, SetForegroundWindow,
+                SetWindowLongPtrW, SetWindowTextW, ShowWindow, TranslateMessage, WINDOW_EX_STYLE,
+                WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_NCCREATE, WM_NOTIFY, WM_PAINT,
+                WM_SETFONT, WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD, WS_EX_CLIENTEDGE,
+                WS_EX_CONTROLPARENT, WS_EX_DLGMODALFRAME, WS_GROUP, WS_OVERLAPPED, WS_SYSMENU,
+                WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
             },
         },
     },
@@ -48,7 +52,7 @@ use crate::{
 
 const CLASS_NAME: PCWSTR = w!("CompositeFontEditorWindow");
 const WINDOW_WIDTH: i32 = 800;
-const WINDOW_HEIGHT: i32 = 760;
+const WINDOW_HEIGHT: i32 = 790;
 
 const ID_PROFILE: usize = 100;
 const ID_UNIT: usize = 101;
@@ -282,7 +286,8 @@ unsafe fn create_controls(window: HWND, context: &mut DialogContext) -> Result<(
             WS_CHILD
                 | WS_VISIBLE
                 | WS_TABSTOP
-                | WINDOW_STYLE((CBS_DROPDOWN | CBS_AUTOHSCROLL) as u32),
+                | WS_VSCROLL
+                | WINDOW_STYLE((CBS_DROPDOWN | CBS_AUTOHSCROLL | CBS_NOINTEGRALHEIGHT) as u32),
             WINDOW_EX_STYLE(0),
             110,
             16,
@@ -511,6 +516,12 @@ unsafe fn create_controls(window: HWND, context: &mut DialogContext) -> Result<(
 
     unsafe {
         fill_font_combo(context);
+        SendMessageW(
+            context.controls.font,
+            CB_SETMINVISIBLE,
+            Some(WPARAM(12)),
+            None,
+        );
         refresh_all(window, context);
     }
     Ok(())
@@ -939,6 +950,9 @@ unsafe fn paint_preview(window: HWND, context: &DialogContext) {
             let _ = Rectangle(dc, 20, 475, 750, 665);
             SetBkMode(dc, TRANSPARENT);
         }
+        let baseline_pen = unsafe { CreatePen(PS_SOLID, 1, COLORREF(0x0000_40E0)) };
+        let glyph_pen = unsafe { CreatePen(PS_SOLID, 1, COLORREF(0x00C0_C000)) };
+        let old_pen = unsafe { SelectObject(dc, HGDIOBJ(baseline_pen.0)) };
         let profile = context.model.selected_profile();
         let mut x = 35;
         let mut y = 500;
@@ -977,16 +991,103 @@ unsafe fn paint_preview(window: HWND, context: &DialogContext) {
                 x = 35;
                 y += 72;
             }
-            let baseline = (adjustment.baseline_shift_em * height as f64).round() as i32;
+            let baseline_shift = (adjustment.baseline_shift_em * height as f64).round() as i32;
+            let draw_y = y - baseline_shift;
+            let mut metrics = TEXTMETRICW::default();
+            let _ = unsafe { GetTextMetricsW(dc, &mut metrics) };
+            let baseline_y = draw_y + metrics.tmAscent;
             unsafe {
-                let _ = TextOutW(dc, x, y - baseline, &text);
+                let _ = TextOutW(dc, x, draw_y, &text);
+                draw_preview_guides(
+                    dc,
+                    row.sample,
+                    x,
+                    baseline_y,
+                    extent.cx,
+                    HGDIOBJ(baseline_pen.0),
+                    HGDIOBJ(glyph_pen.0),
+                );
                 SelectObject(dc, old);
                 let _ = DeleteObject(HGDIOBJ(font.0));
             }
             x += extent.cx + 22;
         }
+        unsafe {
+            SelectObject(dc, old_pen);
+            let _ = DeleteObject(HGDIOBJ(baseline_pen.0));
+            let _ = DeleteObject(HGDIOBJ(glyph_pen.0));
+        }
     }
     let _ = unsafe { EndPaint(window, &paint) };
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe fn draw_preview_guides(
+    dc: HDC,
+    text: &str,
+    x: i32,
+    baseline_y: i32,
+    width: i32,
+    baseline_pen: HGDIOBJ,
+    glyph_pen: HGDIOBJ,
+) {
+    unsafe {
+        SelectObject(dc, baseline_pen);
+        draw_line(dc, x, baseline_y, x + width, baseline_y);
+        SelectObject(dc, glyph_pen);
+    }
+
+    let identity = MAT2 {
+        eM11: FIXED { value: 1, fract: 0 },
+        eM12: FIXED::default(),
+        eM21: FIXED::default(),
+        eM22: FIXED { value: 1, fract: 0 },
+    };
+    let mut cursor_x = x;
+    for character in text.chars() {
+        let encoded: Vec<u16> = character.encode_utf16(&mut [0; 2]).to_vec();
+        let mut character_extent = SIZE::default();
+        let _ = unsafe { GetTextExtentPoint32W(dc, &encoded, &mut character_extent) };
+
+        if character as u32 <= u16::MAX as u32 {
+            let mut glyph = GLYPHMETRICS::default();
+            let result = unsafe {
+                GetGlyphOutlineW(
+                    dc,
+                    character as u32,
+                    GGO_METRICS,
+                    &mut glyph,
+                    0,
+                    None,
+                    &identity,
+                )
+            };
+            if result != GDI_ERROR as u32 && glyph.gmBlackBoxX > 0 && glyph.gmBlackBoxY > 0 {
+                let left = cursor_x + glyph.gmptGlyphOrigin.x;
+                let top = baseline_y - glyph.gmptGlyphOrigin.y;
+                let right = left + glyph.gmBlackBoxX as i32;
+                let bottom = top + glyph.gmBlackBoxY as i32;
+                unsafe { draw_box(dc, left, top, right, bottom) };
+            }
+        }
+        cursor_x += character_extent.cx;
+    }
+}
+
+unsafe fn draw_box(dc: HDC, left: i32, top: i32, right: i32, bottom: i32) {
+    unsafe {
+        draw_line(dc, left, top, right, top);
+        draw_line(dc, right, top, right, bottom);
+        draw_line(dc, right, bottom, left, bottom);
+        draw_line(dc, left, bottom, left, top);
+    }
+}
+
+unsafe fn draw_line(dc: HDC, from_x: i32, from_y: i32, to_x: i32, to_y: i32) {
+    unsafe {
+        let _ = MoveToEx(dc, from_x, from_y, None);
+        let _ = LineTo(dc, to_x, to_y);
+    }
 }
 
 unsafe fn show_error(owner: Option<HWND>, error: &str) {
