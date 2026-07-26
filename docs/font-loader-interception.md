@@ -100,4 +100,9 @@ resolve_text_runs(text, base_format) -> [
 ]
 ```
 
+現行実装では、この提案形に対応する内部表現として`ResolvedTextRun`を使用する。文字分類と
+フォールバック解決の結果をUTF-8・UTF-16の両範囲付きrunへ変換し、現在は
+`ControlTagBackend`が制御文字へ展開する。SDK追加後はrun解決を維持したまま
+`NativeSdkBackend`へ交換する。詳細は[テキスト適用バックエンド](render-backends.md)を参照する。
+
 この境界が追加されれば、AviUtl2側のDirectWriteレイアウト、キャッシュ、縦書き、装飾を維持したまま合成フォントを適用できる。

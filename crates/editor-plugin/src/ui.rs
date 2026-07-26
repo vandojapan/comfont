@@ -10,45 +10,55 @@ use compositefont_core::ProfileDocument;
 use windows::{
     Win32::{
         Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM},
+        Graphics::Dwm::{
+            DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR,
+            DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute,
+        },
         Graphics::Gdi::{
-            BeginPaint, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, COLOR_WINDOW, CreateFontW,
-            CreatePen, DEFAULT_CHARSET, DEFAULT_GUI_FONT, DEFAULT_PITCH, DeleteObject, EndPaint,
-            FIXED, FW_NORMAL, GDI_ERROR, GGO_METRICS, GLYPHMETRICS, GM_ADVANCED, GetGlyphOutlineW,
-            GetStockObject, GetSysColorBrush, GetTextExtentPoint32W, GetTextMetricsW, HDC, HGDIOBJ,
-            InvalidateRect, LineTo, MAT2, MoveToEx, OUT_DEFAULT_PRECIS, PAINTSTRUCT, PS_SOLID,
-            SelectObject, SetBkMode, SetGraphicsMode, SetWorldTransform, TEXTMETRICW, TRANSPARENT,
-            TextOutW, XFORM,
+            BeginPaint, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateFontW, CreatePen,
+            CreateSolidBrush, DEFAULT_CHARSET, DEFAULT_GUI_FONT, DEFAULT_PITCH, DT_END_ELLIPSIS,
+            DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DeleteObject, DrawTextW, EndPaint,
+            FIXED, FW_NORMAL, FillRect, GDI_ERROR, GGO_METRICS, GLYPHMETRICS, GM_ADVANCED, GetDC,
+            GetGlyphOutlineW, GetStockObject, GetTextExtentPoint32W, GetTextMetricsW, HBRUSH, HDC,
+            HGDIOBJ, InvalidateRect, LineTo, MAT2, MoveToEx, OUT_DEFAULT_PRECIS, PAINTSTRUCT,
+            PS_SOLID, ReleaseDC, SelectObject, SetBkColor, SetBkMode, SetGraphicsMode,
+            SetTextColor, SetWorldTransform, TEXTMETRICW, TRANSPARENT, TextOutW, XFORM,
         },
         System::LibraryLoader::GetModuleHandleW,
         UI::{
             Controls::{
-                BST_CHECKED, CB_SETMINVISIBLE, COMBOBOXINFO, EM_SETSEL, GetComboBoxInfo,
-                ICC_LISTVIEW_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx,
-                LIST_VIEW_ITEM_STATE_FLAGS, LVCF_TEXT, LVCF_WIDTH, LVCOLUMNW, LVIF_TEXT,
-                LVIS_FOCUSED, LVIS_SELECTED, LVITEMW, LVM_DELETEALLITEMS, LVM_GETITEMCOUNT,
-                LVM_GETNEXTITEM, LVM_INSERTCOLUMNW, LVM_INSERTITEMW, LVM_SETEXTENDEDLISTVIEWSTYLE,
-                LVM_SETITEMSTATE, LVM_SETITEMTEXTW, LVN_ITEMCHANGED, LVNI_SELECTED,
-                LVS_EX_DOUBLEBUFFER, LVS_EX_FULLROWSELECT, LVS_EX_GRIDLINES, LVS_REPORT,
-                LVS_SHOWSELALWAYS, NMLISTVIEW, ShowScrollBar, WC_LISTVIEWW,
+                BST_CHECKED, CB_SETMINVISIBLE, COMBOBOXINFO, EM_SETSEL, GetComboBoxInfo, HDI_TEXT,
+                HDITEMW, HDM_GETITEMCOUNT, HDM_GETITEMRECT, HDM_GETITEMW, ICC_LISTVIEW_CLASSES,
+                INITCOMMONCONTROLSEX, InitCommonControlsEx, LIST_VIEW_ITEM_STATE_FLAGS, LVCF_TEXT,
+                LVCF_WIDTH, LVCOLUMNW, LVIF_TEXT, LVIS_FOCUSED, LVIS_SELECTED, LVITEMW,
+                LVM_DELETEALLITEMS, LVM_GETHEADER, LVM_GETITEMCOUNT, LVM_GETNEXTITEM,
+                LVM_INSERTCOLUMNW, LVM_INSERTITEMW, LVM_SETBKCOLOR, LVM_SETEXTENDEDLISTVIEWSTYLE,
+                LVM_SETITEMSTATE, LVM_SETITEMTEXTW, LVM_SETTEXTBKCOLOR, LVM_SETTEXTCOLOR,
+                LVN_ITEMCHANGED, LVNI_SELECTED, LVS_EX_DOUBLEBUFFER, LVS_EX_FULLROWSELECT,
+                LVS_EX_GRIDLINES, LVS_REPORT, LVS_SHOWSELALWAYS, NMLISTVIEW, SetWindowTheme,
+                ShowScrollBar, WC_LISTVIEWW,
             },
             Input::KeyboardAndMouse::EnableWindow,
+            Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
             WindowsAndMessaging::{
-                BM_GETCHECK, BN_CLICKED, BS_AUTOCHECKBOX, BS_DEFPUSHBUTTON, BS_GROUPBOX,
-                CB_ADDSTRING, CB_GETCOUNT, CB_GETCURSEL, CB_GETDROPPEDSTATE, CB_RESETCONTENT,
-                CB_SETCURSEL, CBN_DROPDOWN, CBN_SELCHANGE, CBS_AUTOHSCROLL, CBS_DROPDOWN,
-                CBS_DROPDOWNLIST, CBS_NOINTEGRALHEIGHT, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW,
-                CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
-                ES_AUTOHSCROLL, GWL_STYLE, GetMessageW, GetWindowLongPtrW, GetWindowRect,
-                GetWindowTextLengthW, GetWindowTextW, HMENU, IDC_ARROW, IsDialogMessageW, IsWindow,
-                LB_GETTOPINDEX, LB_SETTOPINDEX, LoadCursorW, MB_ICONERROR, MB_ICONINFORMATION,
-                MB_OK, MSG, MessageBoxW, RegisterClassW, SB_VERT, SW_HIDE, SW_SHOW,
-                SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+                BM_GETCHECK, BM_SETIMAGE, BN_CLICKED, BS_AUTOCHECKBOX, BS_DEFPUSHBUTTON, BS_ICON,
+                BS_PUSHLIKE, CB_ADDSTRING, CB_GETCOUNT, CB_GETCURSEL, CB_GETDROPPEDSTATE,
+                CB_RESETCONTENT, CB_SETCURSEL, CBN_DROPDOWN, CBN_SELCHANGE, CBS_AUTOHSCROLL,
+                CBS_DROPDOWN, CBS_DROPDOWNLIST, CBS_NOINTEGRALHEIGHT, CREATESTRUCTW, CS_HREDRAW,
+                CS_VREDRAW, CW_USEDEFAULT, CreateIconFromResourceEx, CreateWindowExW,
+                DefWindowProcW, DestroyWindow, DispatchMessageW, ES_AUTOHSCROLL, GWL_STYLE,
+                GetMessageW, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW,
+                GetWindowTextW, HICON, HMENU, IDC_ARROW, IMAGE_ICON, IsDialogMessageW, IsWindow,
+                LB_GETTOPINDEX, LB_SETTOPINDEX, LR_DEFAULTCOLOR, LoadCursorW, MB_ICONERROR,
+                MB_ICONINFORMATION, MB_OK, MSG, MessageBoxW, RegisterClassW, SB_VERT, SW_HIDE,
+                SW_SHOW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
                 SendMessageW, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, SetWindowTextW,
                 ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND,
-                WM_CREATE, WM_CTLCOLORBTN, WM_CTLCOLORSTATIC, WM_MOUSEWHEEL, WM_NCCREATE,
-                WM_NOTIFY, WM_PAINT, WM_SETFONT, WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD,
-                WS_CLIPCHILDREN, WS_EX_CLIENTEDGE, WS_EX_CONTROLPARENT, WS_EX_DLGMODALFRAME,
-                WS_GROUP, WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+                WM_CREATE, WM_CTLCOLORBTN, WM_CTLCOLOREDIT, WM_CTLCOLORLISTBOX, WM_CTLCOLORSTATIC,
+                WM_GETFONT, WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY, WM_NOTIFY, WM_PAINT,
+                WM_SETFONT, WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN,
+                WS_EX_CONTROLPARENT, WS_EX_DLGMODALFRAME, WS_GROUP, WS_OVERLAPPED, WS_SYSMENU,
+                WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
             },
         },
     },
@@ -67,6 +77,87 @@ const WINDOW_WIDTH: i32 = 800;
 const WINDOW_HEIGHT: i32 = 790;
 const PREVIEW_WIDTH: i32 = 730;
 const PREVIEW_HEIGHT: i32 = 190;
+const PREVIEW_FONT_HEIGHT: f64 = 32.0;
+const PREVIEW_LINE_HEIGHT: i32 = 54;
+
+const DARK_WINDOW: COLORREF = COLORREF(0x0024_2120);
+const DARK_CONTROL: COLORREF = COLORREF(0x0030_2D2B);
+const DARK_PREVIEW: COLORREF = COLORREF(0x001B_1918);
+const DARK_TEXT: COLORREF = COLORREF(0x00F4_F3F1);
+const DARK_HEADER: COLORREF = COLORREF(0x003B_3836);
+const DARK_BORDER: COLORREF = COLORREF(0x0056_524F);
+const HEADER_SUBCLASS_ID: usize = 1;
+const ICON_RESOURCE_VERSION: u32 = 0x0003_0000;
+const GUIDE_ICON_SIZE: i32 = 16;
+
+fn shared_dark_brush(slot: &OnceLock<usize>, color: COLORREF) -> HBRUSH {
+    let raw = *slot.get_or_init(|| unsafe { CreateSolidBrush(color).0 as usize });
+    HBRUSH(raw as *mut c_void)
+}
+
+fn dark_window_brush() -> HBRUSH {
+    static BRUSH: OnceLock<usize> = OnceLock::new();
+    shared_dark_brush(&BRUSH, DARK_WINDOW)
+}
+
+fn dark_control_brush() -> HBRUSH {
+    static BRUSH: OnceLock<usize> = OnceLock::new();
+    shared_dark_brush(&BRUSH, DARK_CONTROL)
+}
+
+fn dark_preview_brush() -> HBRUSH {
+    static BRUSH: OnceLock<usize> = OnceLock::new();
+    shared_dark_brush(&BRUSH, DARK_PREVIEW)
+}
+
+fn dark_header_brush() -> HBRUSH {
+    static BRUSH: OnceLock<usize> = OnceLock::new();
+    shared_dark_brush(&BRUSH, DARK_HEADER)
+}
+
+fn dark_border_brush() -> HBRUSH {
+    static BRUSH: OnceLock<usize> = OnceLock::new();
+    shared_dark_brush(&BRUSH, DARK_BORDER)
+}
+
+fn shared_guide_icon(slot: &OnceLock<usize>, bytes: &'static [u8]) -> Option<HICON> {
+    let raw = *slot.get_or_init(|| unsafe {
+        CreateIconFromResourceEx(
+            bytes,
+            true,
+            ICON_RESOURCE_VERSION,
+            GUIDE_ICON_SIZE,
+            GUIDE_ICON_SIZE,
+            LR_DEFAULTCOLOR,
+        )
+        .map(|icon| icon.0 as usize)
+        .unwrap_or_default()
+    });
+    (raw != 0).then_some(HICON(raw as *mut c_void))
+}
+
+fn baseline_guide_icon() -> Option<HICON> {
+    static ICON: OnceLock<usize> = OnceLock::new();
+    shared_guide_icon(&ICON, include_bytes!("../../../resource/b.png"))
+}
+
+fn glyph_bounds_guide_icon() -> Option<HICON> {
+    static ICON: OnceLock<usize> = OnceLock::new();
+    shared_guide_icon(&ICON, include_bytes!("../../../resource/g.png"))
+}
+
+unsafe fn set_button_icon(button: HWND, icon: Option<HICON>) {
+    if let Some(icon) = icon {
+        unsafe {
+            SendMessageW(
+                button,
+                BM_SETIMAGE,
+                Some(WPARAM(IMAGE_ICON.0 as usize)),
+                Some(LPARAM(icon.0 as isize)),
+            );
+        }
+    }
+}
 
 const ID_PROFILE: usize = 100;
 const ID_UNIT: usize = 101;
@@ -86,6 +177,8 @@ const ID_SAVE: usize = 131;
 const ID_DELETE: usize = 132;
 const ID_SAMPLE_VISIBLE: usize = 140;
 const ID_SPECIAL: usize = 141;
+const ID_BASELINE_GUIDE: usize = 142;
+const ID_GLYPH_BOUNDS_GUIDE: usize = 143;
 const ID_OK: usize = 1;
 const ID_CANCEL: usize = 2;
 
@@ -103,6 +196,8 @@ struct Controls {
     row_add: HWND,
     row_remove: HWND,
     sample_visible: HWND,
+    baseline_guide: HWND,
+    glyph_bounds_guide: HWND,
     preview: HWND,
 }
 
@@ -116,6 +211,8 @@ struct DialogContext {
     controls: Controls,
     refreshing: bool,
     sample_visible: bool,
+    show_baseline_guide: bool,
+    show_glyph_bounds_guide: bool,
 }
 
 impl DialogContext {
@@ -136,6 +233,8 @@ impl DialogContext {
             controls: Controls::default(),
             refreshing: false,
             sample_visible: true,
+            show_baseline_guide: true,
+            show_glyph_bounds_guide: true,
         }
     }
 }
@@ -175,6 +274,7 @@ pub fn show_editor(
         )
         .map_err(|error| format!("合成フォント画面を作成できません: {error}"))?
     };
+    unsafe { apply_dark_window_frame(window) };
 
     unsafe {
         let _ = EnableWindow(owner, false);
@@ -220,7 +320,7 @@ fn register_window_class() -> Result<(), String> {
                 lpfnWndProc: Some(window_proc),
                 hInstance: instance,
                 hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
-                hbrBackground: GetSysColorBrush(COLOR_WINDOW),
+                hbrBackground: dark_window_brush(),
                 lpszClassName: CLASS_NAME,
                 ..Default::default()
             };
@@ -235,7 +335,7 @@ fn register_window_class() -> Result<(), String> {
                 lpfnWndProc: Some(preview_window_proc),
                 hInstance: instance,
                 hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
-                hbrBackground: GetSysColorBrush(COLOR_WINDOW),
+                hbrBackground: dark_preview_brush(),
                 lpszClassName: PREVIEW_CLASS_NAME,
                 ..Default::default()
             };
@@ -256,6 +356,33 @@ fn module_instance() -> Result<HINSTANCE, String> {
             .map(|module| HINSTANCE(module.0))
             .map_err(|error| format!("モジュールハンドルを取得できません: {error}"))
     }
+}
+
+unsafe fn apply_dark_window_frame(window: HWND) {
+    let enabled = 1i32;
+    let _ = unsafe {
+        DwmSetWindowAttribute(
+            window,
+            DWMWA_USE_IMMERSIVE_DARK_MODE,
+            (&enabled as *const i32).cast(),
+            size_of::<i32>() as u32,
+        )
+    };
+    for (attribute, color) in [
+        (DWMWA_CAPTION_COLOR, DARK_WINDOW),
+        (DWMWA_TEXT_COLOR, DARK_TEXT),
+        (DWMWA_BORDER_COLOR, DARK_CONTROL),
+    ] {
+        let _ = unsafe {
+            DwmSetWindowAttribute(
+                window,
+                attribute,
+                (&color.0 as *const u32).cast(),
+                size_of::<u32>() as u32,
+            )
+        };
+    }
+    let _ = unsafe { SetWindowTheme(window, w!("DarkMode_Explorer"), PCWSTR::null()) };
 }
 
 unsafe extern "system" fn window_proc(
@@ -321,14 +448,129 @@ unsafe extern "system" fn window_proc(
         }
         WM_CTLCOLORSTATIC | WM_CTLCOLORBTN => {
             let dc = HDC(wparam.0 as *mut c_void);
-            unsafe { SetBkMode(dc, TRANSPARENT) };
-            LRESULT(unsafe { GetSysColorBrush(COLOR_WINDOW) }.0 as isize)
+            unsafe {
+                SetTextColor(dc, DARK_TEXT);
+                SetBkMode(dc, TRANSPARENT);
+            }
+            LRESULT(dark_window_brush().0 as isize)
+        }
+        WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX => {
+            let dc = HDC(wparam.0 as *mut c_void);
+            unsafe {
+                SetTextColor(dc, DARK_TEXT);
+                SetBkColor(dc, DARK_CONTROL);
+            }
+            LRESULT(dark_control_brush().0 as isize)
         }
         WM_CLOSE => {
             let _ = unsafe { DestroyWindow(window) };
             LRESULT(0)
         }
         _ => unsafe { DefWindowProcW(window, message, wparam, lparam) },
+    }
+}
+
+unsafe extern "system" fn dark_header_subclass_proc(
+    header: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    subclass_id: usize,
+    _reference_data: usize,
+) -> LRESULT {
+    if message == WM_NCDESTROY {
+        let _ =
+            unsafe { RemoveWindowSubclass(header, Some(dark_header_subclass_proc), subclass_id) };
+        return unsafe { DefSubclassProc(header, message, wparam, lparam) };
+    }
+
+    let result = unsafe { DefSubclassProc(header, message, wparam, lparam) };
+    if message == WM_PAINT {
+        unsafe { paint_dark_header(header) };
+    }
+    result
+}
+
+unsafe fn paint_dark_header(header: HWND) {
+    let dc = unsafe { GetDC(Some(header)) };
+    if dc.is_invalid() {
+        return;
+    }
+
+    let font = unsafe { SendMessageW(header, WM_GETFONT, None, None) };
+    let previous_font =
+        (font.0 != 0).then(|| unsafe { SelectObject(dc, HGDIOBJ(font.0 as *mut c_void)) });
+
+    let item_count = unsafe { SendMessageW(header, HDM_GETITEMCOUNT, None, None) }
+        .0
+        .max(0) as usize;
+    for index in 0..item_count {
+        let mut rect = RECT::default();
+        let found = unsafe {
+            SendMessageW(
+                header,
+                HDM_GETITEMRECT,
+                Some(WPARAM(index)),
+                Some(LPARAM((&mut rect as *mut RECT) as isize)),
+            )
+        };
+        if found.0 != 0 {
+            unsafe { paint_dark_header_item(header, index, dc, rect) };
+        }
+    }
+    unsafe {
+        if let Some(previous_font) = previous_font {
+            SelectObject(dc, previous_font);
+        }
+        ReleaseDC(Some(header), dc);
+    }
+}
+
+unsafe fn paint_dark_header_item(header: HWND, index: usize, dc: HDC, rect: RECT) {
+    let mut text = [0u16; 128];
+    let mut item = HDITEMW {
+        mask: HDI_TEXT,
+        pszText: PWSTR(text.as_mut_ptr()),
+        cchTextMax: text.len() as i32,
+        ..Default::default()
+    };
+    unsafe {
+        SendMessageW(
+            header,
+            HDM_GETITEMW,
+            Some(WPARAM(index)),
+            Some(LPARAM((&mut item as *mut HDITEMW) as isize)),
+        );
+        FillRect(dc, &rect, dark_header_brush());
+        SetTextColor(dc, DARK_TEXT);
+        SetBkMode(dc, TRANSPARENT);
+        let mut text_rect = rect;
+        text_rect.left += 6;
+        text_rect.right -= 4;
+        let text_length = text
+            .iter()
+            .position(|value| *value == 0)
+            .unwrap_or(text.len());
+        DrawTextW(
+            dc,
+            &mut text[..text_length],
+            &mut text_rect,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
+        );
+        let divider = RECT {
+            left: rect.right - 1,
+            top: rect.top,
+            right: rect.right,
+            bottom: rect.bottom,
+        };
+        FillRect(dc, &divider, dark_border_brush());
+        let bottom_border = RECT {
+            left: rect.left,
+            top: rect.bottom - 1,
+            right: rect.right,
+            bottom: rect.bottom,
+        };
+        FillRect(dc, &bottom_border, dark_border_brush());
     }
 }
 
@@ -419,7 +661,7 @@ unsafe fn create_controls(window: HWND, context: &mut DialogContext) -> Result<(
                 | WS_TABSTOP
                 | WS_BORDER
                 | WINDOW_STYLE(LVS_REPORT | LVS_SHOWSELALWAYS),
-            WS_EX_CLIENTEDGE,
+            WINDOW_EX_STYLE(0),
             20,
             55,
             730,
@@ -427,6 +669,29 @@ unsafe fn create_controls(window: HWND, context: &mut DialogContext) -> Result<(
             ID_LIST,
             font,
         )?;
+        SendMessageW(
+            context.controls.list,
+            LVM_SETBKCOLOR,
+            None,
+            Some(LPARAM(DARK_CONTROL.0 as isize)),
+        );
+        SendMessageW(
+            context.controls.list,
+            LVM_SETTEXTBKCOLOR,
+            None,
+            Some(LPARAM(DARK_CONTROL.0 as isize)),
+        );
+        SendMessageW(
+            context.controls.list,
+            LVM_SETTEXTCOLOR,
+            None,
+            Some(LPARAM(DARK_TEXT.0 as isize)),
+        );
+        let list_header =
+            HWND(SendMessageW(context.controls.list, LVM_GETHEADER, None, None).0 as *mut c_void);
+        if !list_header.is_invalid() {
+            let _ = SetWindowTheme(list_header, w!("DarkMode_ItemsView"), PCWSTR::null());
+        }
         SendMessageW(
             context.controls.list,
             LVM_SETEXTENDEDLISTVIEWSTYLE,
@@ -450,6 +715,15 @@ unsafe fn create_controls(window: HWND, context: &mut DialogContext) -> Result<(
         .enumerate()
         {
             list_insert_column(context.controls.list, index, title, width);
+        }
+        if !list_header.is_invalid() {
+            let _ = SetWindowSubclass(
+                list_header,
+                Some(dark_header_subclass_proc),
+                HEADER_SUBCLASS_ID,
+                0,
+            );
+            let _ = InvalidateRect(Some(list_header), None, true);
         }
 
         context.controls.row_add = create_child(
@@ -492,20 +766,7 @@ unsafe fn create_controls(window: HWND, context: &mut DialogContext) -> Result<(
             font,
         )?;
 
-        create_child(
-            window,
-            instance,
-            w!("BUTTON"),
-            "選択行の設定",
-            WS_CHILD | WS_VISIBLE | WINDOW_STYLE(BS_GROUPBOX as u32),
-            WINDOW_EX_STYLE(0),
-            20,
-            285,
-            730,
-            105,
-            0,
-            font,
-        )?;
+        create_label(window, instance, "選択行の設定", 20, 282, 90, 20, 0, font)?;
         context.controls.selected_category = create_label(
             window,
             instance,
@@ -604,19 +865,74 @@ unsafe fn create_controls(window: HWND, context: &mut DialogContext) -> Result<(
             Some(WPARAM(BST_CHECKED.0 as usize)),
             None,
         );
+        create_label(window, instance, "ガイド：", 180, 444, 55, 22, 0, font)?;
+        context.controls.baseline_guide = create_child(
+            window,
+            instance,
+            w!("BUTTON"),
+            "ベースラインガイド",
+            WS_CHILD
+                | WS_VISIBLE
+                | WS_TABSTOP
+                | WINDOW_STYLE((BS_AUTOCHECKBOX | BS_PUSHLIKE | BS_ICON) as u32),
+            WINDOW_EX_STYLE(0),
+            235,
+            439,
+            42,
+            28,
+            ID_BASELINE_GUIDE,
+            font,
+        )?;
+        context.controls.glyph_bounds_guide = create_child(
+            window,
+            instance,
+            w!("BUTTON"),
+            "字形境界ガイド",
+            WS_CHILD
+                | WS_VISIBLE
+                | WS_TABSTOP
+                | WINDOW_STYLE((BS_AUTOCHECKBOX | BS_PUSHLIKE | BS_ICON) as u32),
+            WINDOW_EX_STYLE(0),
+            282,
+            439,
+            42,
+            28,
+            ID_GLYPH_BOUNDS_GUIDE,
+            font,
+        )?;
+        set_button_icon(context.controls.baseline_guide, baseline_guide_icon());
+        set_button_icon(
+            context.controls.glyph_bounds_guide,
+            glyph_bounds_guide_icon(),
+        );
+        for button in [
+            context.controls.baseline_guide,
+            context.controls.glyph_bounds_guide,
+        ] {
+            SendMessageW(
+                button,
+                windows::Win32::UI::WindowsAndMessaging::BM_SETCHECK,
+                Some(WPARAM(BST_CHECKED.0 as usize)),
+                None,
+            );
+        }
         create_label(
             window,
             instance,
             "選択したプロファイルの文字種別プレビュー",
-            180,
+            340,
             444,
-            360,
+            390,
             22,
             0,
             font,
         )?;
 
         context.controls.preview = create_preview(window, instance, context)?;
+
+        for combo in [context.controls.profile, unit, context.controls.font] {
+            let _ = SetWindowTheme(combo, w!("DarkMode_CFD"), PCWSTR::null());
+        }
 
         create_child(
             window,
@@ -720,6 +1036,7 @@ unsafe fn create_child(
         .map_err(|error| format!("画面部品を作成できません: {error}"))?
     };
     unsafe {
+        let _ = SetWindowTheme(child, w!("DarkMode_Explorer"), PCWSTR::null());
         SendMessageW(
             child,
             WM_SETFONT,
@@ -776,7 +1093,7 @@ unsafe fn create_edit(
             w!("EDIT"),
             "",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
-            WS_EX_CLIENTEDGE,
+            WINDOW_EX_STYLE(0),
             x,
             y,
             width,
@@ -875,6 +1192,20 @@ unsafe fn handle_command(window: HWND, context: &mut DialogContext, id: usize, n
                 }
             }
         }
+        (ID_BASELINE_GUIDE, BN_CLICKED) => {
+            context.show_baseline_guide = unsafe {
+                SendMessageW(context.controls.baseline_guide, BM_GETCHECK, None, None).0 as u32
+                    == BST_CHECKED.0
+            };
+            unsafe { refresh_preview(context) };
+        }
+        (ID_GLYPH_BOUNDS_GUIDE, BN_CLICKED) => {
+            context.show_glyph_bounds_guide = unsafe {
+                SendMessageW(context.controls.glyph_bounds_guide, BM_GETCHECK, None, None).0 as u32
+                    == BST_CHECKED.0
+            };
+            unsafe { refresh_preview(context) };
+        }
         (ID_SPECIAL, BN_CLICKED) => unsafe {
             MessageBoxW(
                 Some(window),
@@ -914,7 +1245,7 @@ fn save_confirmation_message(outcome: &FontStageOutcome) -> String {
     };
 
     format!(
-        "プロファイルを保存しました。{font_status}\n\nこのビルドはFontManagerへ合成プロファイルを追加登録しません。\nプロファイル名は標準のフォント一覧には表示されません。\n「合成フォント字幕」またはcompositefont.decorate(...)から使用してください。"
+        "プロファイルを保存しました。{font_status}\n\nこのビルドはFontManagerへ合成プロファイルを追加登録しません。\nプロファイル名は標準のフォント一覧には表示されません。\n「合成フォントテキスト」「合成フォント字幕」またはcompositefont.decorate(...)から使用してください。"
     )
 }
 
@@ -1239,6 +1570,10 @@ unsafe fn configure_font_dropdown(combo: HWND) {
 
     let style = unsafe { GetWindowLongPtrW(info.hwndList, GWL_STYLE) };
     unsafe {
+        let _ = SetWindowTheme(info.hwndList, w!("DarkMode_Explorer"), PCWSTR::null());
+        if !info.hwndItem.is_invalid() {
+            let _ = SetWindowTheme(info.hwndItem, w!("DarkMode_Explorer"), PCWSTR::null());
+        }
         SetWindowLongPtrW(info.hwndList, GWL_STYLE, style | WS_VSCROLL.0 as isize);
         let _ = SetWindowPos(
             info.hwndList,
@@ -1447,6 +1782,10 @@ unsafe fn window_text(window: HWND) -> String {
 unsafe fn paint_preview(window: HWND, context: &DialogContext) {
     let mut paint = PAINTSTRUCT::default();
     let dc = unsafe { BeginPaint(window, &mut paint) };
+    unsafe {
+        FillRect(dc, &paint.rcPaint, dark_preview_brush());
+        SetTextColor(dc, DARK_TEXT);
+    }
     if context.sample_visible {
         unsafe {
             SetBkMode(dc, TRANSPARENT);
@@ -1460,7 +1799,8 @@ unsafe fn paint_preview(window: HWND, context: &DialogContext) {
         let mut y = 25;
         for row in CATEGORY_ROWS {
             let adjustment = profile.adjustment_for(row.class);
-            let height = (42.0 * adjustment.size_ratio.clamp(0.5, 2.0)).round() as i32;
+            let height =
+                (PREVIEW_FONT_HEIGHT * adjustment.size_ratio.clamp(0.5, 2.0)).round() as i32;
             let family = if adjustment.font_family.is_empty() {
                 "Yu Gothic UI"
             } else {
@@ -1493,7 +1833,7 @@ unsafe fn paint_preview(window: HWND, context: &DialogContext) {
             let rendered_width = (run_width as f64 * horizontal_scale).round() as i32;
             if x + rendered_width > PREVIEW_WIDTH - 20 {
                 x = 15;
-                y += 72;
+                y += PREVIEW_LINE_HEIGHT;
             }
             let baseline_shift = (adjustment.baseline_shift_em * height as f64).round() as i32;
             let draw_y = y - baseline_shift;
@@ -1513,6 +1853,8 @@ unsafe fn paint_preview(window: HWND, context: &DialogContext) {
                     tracking,
                     HGDIOBJ(baseline_pen.0),
                     HGDIOBJ(glyph_pen.0),
+                    context.show_baseline_guide,
+                    context.show_glyph_bounds_guide,
                 );
                 let _ = SetWorldTransform(
                     dc,
@@ -1573,11 +1915,19 @@ unsafe fn draw_preview_run(
     tracking: i32,
     baseline_pen: HGDIOBJ,
     glyph_pen: HGDIOBJ,
+    show_baseline: bool,
+    show_glyph_bounds: bool,
 ) {
-    unsafe {
-        SelectObject(dc, baseline_pen);
-        draw_line(dc, x, baseline_y, x + width, baseline_y);
-        SelectObject(dc, glyph_pen);
+    if show_baseline {
+        unsafe {
+            SelectObject(dc, baseline_pen);
+            draw_line(dc, x, baseline_y, x + width, baseline_y);
+        }
+    }
+    if show_glyph_bounds {
+        unsafe {
+            SelectObject(dc, glyph_pen);
+        }
     }
 
     let identity = MAT2 {
@@ -1595,7 +1945,7 @@ unsafe fn draw_preview_run(
         let _ = unsafe { GetTextExtentPoint32W(dc, encoded, &mut character_extent) };
         let _ = unsafe { TextOutW(dc, cursor_x, draw_y, encoded) };
 
-        if character as u32 <= u16::MAX as u32 {
+        if show_glyph_bounds && character as u32 <= u16::MAX as u32 {
             let mut glyph = GLYPHMETRICS::default();
             let result = unsafe {
                 GetGlyphOutlineW(

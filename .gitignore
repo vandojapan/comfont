@@ -3,3 +3,25 @@
 /release
 /target
 aviutl2-composite-font-handoff.md
+
+# Local verification captures
+/target/editor-ui*.png
+/target/*-check.png
+/target/*-icon.png
+/verification-output/
+/screenshots/
+
+# Temporary browser profiles used to rasterize/inspect local assets
+/target/chrome-icon-profile-*/
+/target/edge-icon-profile-*/
+/chrome-icon-profile-*/
+/edge-icon-profile-*/
+
+# AviUtl2 verification runtime output
+/.aviutl2-cli/**/data/Log/
+/.aviutl2-cli/**/data/Backup/
+
+# Crash and transient files created by verification tools
+*.dmp
+*.tmp
+*.bak

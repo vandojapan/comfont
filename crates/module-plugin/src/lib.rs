@@ -10,6 +10,7 @@ use compositefont_core::{
 use font_coverage::UnknownGlyphCoverage;
 use font_coverage::{FontManagerGlyphCoverage, GlyphCoverage};
 use std::{
+    ops::Range,
     path::{Path, PathBuf},
     sync::Mutex,
     time::{Duration, Instant, SystemTime},
@@ -208,11 +209,37 @@ impl ReloadableProfiles {
     }
 }
 
-#[derive(Clone)]
-struct TextRun<'text> {
-    text: &'text str,
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TextRunRange {
+    utf8: Range<usize>,
+    utf16: Range<usize>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ResolvedTextRun {
+    range: TextRunRange,
     adjustment: Option<FontAdjustment>,
 }
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct BaseTextFormat {
+    font_size: Option<f64>,
+    char_spacing: Option<f64>,
+}
+
+trait TextRunBackend {
+    type Output;
+
+    /// `None` means that this backend cannot represent the resolved runs.
+    fn apply(
+        &self,
+        source: &str,
+        runs: &[ResolvedTextRun],
+        base_format: BaseTextFormat,
+    ) -> Option<Self::Output>;
+}
+
+struct ControlTagBackend;
 
 #[cfg(test)]
 fn decorate_plain_text(
@@ -244,73 +271,85 @@ fn decorate_plain_text_with_coverage(
         return text.to_owned();
     }
 
-    let Some(runs) = collect_runs(text, profile, coverage) else {
-        return text.to_owned();
+    let runs = resolve_text_runs(text, profile, coverage);
+    let base_format = BaseTextFormat {
+        font_size: base_font_size.filter(|value| value.is_finite() && *value > 0.0),
+        char_spacing: base_char_spacing.filter(|value| value.is_finite()),
     };
-    let base_font_size = base_font_size.filter(|value| value.is_finite() && *value > 0.0);
-    let base_char_spacing = base_char_spacing.filter(|value| value.is_finite());
-    let mut decorated = String::with_capacity(text.len() + runs.len() * 48);
-
-    for run in runs {
-        write_run(&mut decorated, run, base_font_size, base_char_spacing);
-    }
-
-    decorated
+    ControlTagBackend
+        .apply(text, &runs, base_format)
+        .unwrap_or_else(|| text.to_owned())
 }
 
-fn collect_runs<'text>(
-    text: &'text str,
+fn resolve_text_runs(
+    text: &str,
     profile: &CompositeFontProfile,
     coverage: &mut dyn GlyphCoverage,
-) -> Option<Vec<TextRun<'text>>> {
+) -> Vec<ResolvedTextRun> {
     let mut runs = Vec::new();
-    let mut current_start = 0;
+    let mut current_utf8_start = 0;
+    let mut current_utf16_start = 0;
+    let mut utf16_index = 0;
     let mut current_adjustment: Option<FontAdjustment> = None;
 
     for (index, character) in text.char_indices() {
+        let utf16_end = utf16_index + character.len_utf16();
         if matches!(character, '\r' | '\n') {
             if let Some(adjustment) = current_adjustment.take() {
-                runs.push(TextRun {
-                    text: &text[current_start..index],
+                runs.push(ResolvedTextRun {
+                    range: TextRunRange {
+                        utf8: current_utf8_start..index,
+                        utf16: current_utf16_start..utf16_index,
+                    },
                     adjustment: Some(adjustment),
                 });
             }
             let end = index + character.len_utf8();
-            runs.push(TextRun {
-                text: &text[index..end],
+            runs.push(ResolvedTextRun {
+                range: TextRunRange {
+                    utf8: index..end,
+                    utf16: utf16_index..utf16_end,
+                },
                 adjustment: None,
             });
-            current_start = end;
+            current_utf8_start = end;
+            current_utf16_start = utf16_end;
+            utf16_index = utf16_end;
             continue;
         }
 
         let adjustment = resolved_adjustment(profile, character, coverage);
-        if !is_safe_adjustment(&adjustment) {
-            return None;
-        }
 
         match current_adjustment {
             Some(ref current) if current != &adjustment => {
-                runs.push(TextRun {
-                    text: &text[current_start..index],
+                runs.push(ResolvedTextRun {
+                    range: TextRunRange {
+                        utf8: current_utf8_start..index,
+                        utf16: current_utf16_start..utf16_index,
+                    },
                     adjustment: current_adjustment.take(),
                 });
-                current_start = index;
+                current_utf8_start = index;
+                current_utf16_start = utf16_index;
                 current_adjustment = Some(adjustment);
             }
             None => current_adjustment = Some(adjustment),
             Some(_) => {}
         }
+        utf16_index = utf16_end;
     }
 
     if let Some(adjustment) = current_adjustment {
-        runs.push(TextRun {
-            text: &text[current_start..],
+        runs.push(ResolvedTextRun {
+            range: TextRunRange {
+                utf8: current_utf8_start..text.len(),
+                utf16: current_utf16_start..utf16_index,
+            },
             adjustment: Some(adjustment),
         });
     }
 
-    Some(runs)
+    runs
 }
 
 fn resolved_adjustment(
@@ -370,6 +409,31 @@ fn adjustments_for_class(
     candidates
 }
 
+impl TextRunBackend for ControlTagBackend {
+    type Output = String;
+
+    fn apply(
+        &self,
+        source: &str,
+        runs: &[ResolvedTextRun],
+        base_format: BaseTextFormat,
+    ) -> Option<Self::Output> {
+        if runs
+            .iter()
+            .filter_map(|run| run.adjustment.as_ref())
+            .any(|adjustment| !is_safe_adjustment(adjustment))
+        {
+            return None;
+        }
+
+        let mut decorated = String::with_capacity(source.len() + runs.len() * 48);
+        for run in runs {
+            write_control_tag_run(&mut decorated, source, run, base_format);
+        }
+        Some(decorated)
+    }
+}
+
 fn is_safe_adjustment(adjustment: &FontAdjustment) -> bool {
     !adjustment
         .font_family
@@ -385,25 +449,26 @@ fn is_safe_adjustment(adjustment: &FontAdjustment) -> bool {
         && adjustment.horizontal_scale_ratio > 0.0
 }
 
-fn write_run(
+fn write_control_tag_run(
     output: &mut String,
-    run: TextRun<'_>,
-    base_font_size: Option<f64>,
-    base_char_spacing: Option<f64>,
+    source: &str,
+    run: &ResolvedTextRun,
+    base_format: BaseTextFormat,
 ) {
+    let run_text = &source[run.range.utf8.clone()];
     let Some(adjustment) = run.adjustment.as_ref() else {
-        output.push_str(run.text);
+        output.push_str(run_text);
         return;
     };
     let has_font = !adjustment.font_family.is_empty();
     let has_size = !approximately_equal(adjustment.size_ratio, 1.0);
-    let has_tracking = base_font_size.is_some()
-        && base_char_spacing.is_some()
+    let has_tracking = base_format.font_size.is_some()
+        && base_format.char_spacing.is_some()
         && !approximately_equal(adjustment.tracking_adjust_em, 0.0);
     let has_horizontal = !approximately_equal(adjustment.horizontal_scale_ratio, 1.0);
     let has_vertical = !approximately_equal(adjustment.vertical_scale_ratio, 1.0);
     let has_baseline =
-        base_font_size.is_some() && !approximately_equal(adjustment.baseline_shift_em, 0.0);
+        base_format.font_size.is_some() && !approximately_equal(adjustment.baseline_shift_em, 0.0);
 
     if has_font {
         output.push_str("<@");
@@ -418,8 +483,8 @@ fn write_run(
     if has_tracking {
         output.push_str("<gw");
         output.push_str(&format_control_number(
-            base_char_spacing.unwrap_or_default()
-                + base_font_size.unwrap_or_default() * adjustment.tracking_adjust_em,
+            base_format.char_spacing.unwrap_or_default()
+                + base_format.font_size.unwrap_or_default() * adjustment.tracking_adjust_em,
         ));
         output.push('>');
     }
@@ -434,7 +499,7 @@ fn write_run(
         output.push('>');
     }
     if has_baseline {
-        let shift = -base_font_size.unwrap_or_default() * adjustment.baseline_shift_em;
+        let shift = -base_format.font_size.unwrap_or_default() * adjustment.baseline_shift_em;
         output.push_str("<p+0,");
         if shift >= 0.0 {
             output.push('+');
@@ -443,7 +508,7 @@ fn write_run(
         output.push('>');
     }
 
-    output.push_str(run.text);
+    output.push_str(run_text);
 
     if has_baseline {
         output.push_str("<p>");
@@ -877,6 +942,28 @@ mod tests {
                 "<p><th><tw><gw><s><@>"
             )
         );
+    }
+
+    #[test]
+    fn resolved_runs_expose_utf8_and_utf16_ranges_for_sdk_adapter() {
+        let text = "A𠮷\nあ";
+        let mut coverage = UnknownGlyphCoverage;
+        let runs = resolve_text_runs(
+            text,
+            &CompositeFontProfile::neutral_default(),
+            &mut coverage,
+        );
+
+        assert_eq!(runs.len(), 3);
+        assert_eq!(runs[0].range.utf8, 0..5);
+        assert_eq!(runs[0].range.utf16, 0..3);
+        assert_eq!(&text[runs[0].range.utf8.clone()], "A𠮷");
+        assert_eq!(runs[1].range.utf8, 5..6);
+        assert_eq!(runs[1].range.utf16, 3..4);
+        assert_eq!(runs[1].adjustment, None);
+        assert_eq!(runs[2].range.utf8, 6..9);
+        assert_eq!(runs[2].range.utf16, 4..5);
+        assert_eq!(&text[runs[2].range.utf8.clone()], "あ");
     }
 
     #[test]

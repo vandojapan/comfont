@@ -1,0 +1,19 @@
+[Object]
+[Object.0]
+effect.name=テキスト
+サイズ=64.00
+字間=0.00
+行間=0.00
+表示速度=0.00
+フォント=
+文字色=ffffff
+影・縁色=000000
+文字装飾=標準文字
+文字揃え=中央揃え[中]
+B=0
+I=0
+テキスト=<?local settings={\n    profile="default", -- 合成フォントエディターで保存したプロファイル名\n    text=[=[ここにテキストを入力]=],\n}\nlocal compositefont=obj.module("compositefont")\nlocal _,size,_,_,_,_,_,spacing=obj.getfont()\nobj.mes(compositefont.decorate(settings.text,settings.profile,size,spacing))\n?>
+文字毎に個別オブジェクト=0
+自動スクロール=0
+移動座標上に表示=0
+オブジェクトの長さを自動調節=0

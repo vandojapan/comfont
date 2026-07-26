@@ -51,3 +51,13 @@ source = "scripts/合成フォント字幕.object"
 
 [artifacts.compositefont-subtitle-object.profiles.release]
 source = "scripts/合成フォント字幕.object"
+
+[artifacts.compositefont-text-object]
+destination = "Alias/合成フォントテキスト.object"
+placement_method = "copy"
+
+[artifacts.compositefont-text-object.profiles.debug]
+source = "scripts/合成フォントテキスト.object"
+
+[artifacts.compositefont-text-object.profiles.release]
+source = "scripts/合成フォントテキスト.object"

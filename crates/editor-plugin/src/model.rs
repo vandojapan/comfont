@@ -3,13 +3,13 @@ use compositefont_core::{
 };
 
 pub const CATEGORY_ROWS: [CategoryRow; 7] = [
-    CategoryRow::new(CharacterClass::Kanji, "漢字", "国漢字"),
-    CategoryRow::new(CharacterClass::Hiragana, "かな", "あいう"),
-    CategoryRow::new(CharacterClass::Katakana, "カナ", "アイウ"),
-    CategoryRow::new(CharacterClass::Symbol, "記号", "。・！？★"),
-    CategoryRow::new(CharacterClass::Western, "欧文", "LINE Word"),
-    CategoryRow::new(CharacterClass::Digit, "数字", "123456"),
-    CategoryRow::new(CharacterClass::Other, "その他", "é Ж Ａ"),
+    CategoryRow::new(CharacterClass::Kanji, "漢字", "永国漢字髙﨑"),
+    CategoryRow::new(CharacterClass::Hiragana, "かな", "あがぱゃゅょっ"),
+    CategoryRow::new(CharacterClass::Katakana, "カナ", "アガパャュョッー"),
+    CategoryRow::new(CharacterClass::Symbol, "記号", "。、・！？「」"),
+    CategoryRow::new(CharacterClass::Western, "欧文", "TypeAaGgQq"),
+    CategoryRow::new(CharacterClass::Digit, "数字", "0123456789"),
+    CategoryRow::new(CharacterClass::Other, "その他", "ＡéЖΩ"),
 ];
 
 #[derive(Clone, Copy, Debug)]
@@ -516,5 +516,19 @@ mod tests {
     fn keeps_at_least_one_profile() {
         let mut model = EditorModel::new(ProfileDocument::with_builtin_default());
         assert!(model.delete_selected_profile().is_err());
+    }
+
+    #[test]
+    fn preview_samples_only_contain_their_assigned_character_class() {
+        for row in CATEGORY_ROWS {
+            for character in row.sample.chars() {
+                assert_eq!(
+                    compositefont_core::classify_character(character),
+                    row.class,
+                    "{character:?} in the {} preview sample",
+                    row.label
+                );
+            }
+        }
     }
 }

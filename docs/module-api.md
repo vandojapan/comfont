@@ -44,6 +44,10 @@ local font, scale, shift, tracking, vertical_scale, horizontal_scale =
 
 ## `compositefont.decorate(text, profile?, base_font_size?, base_char_spacing?)`
 
+`decorate`は現在のSDK向け互換バックエンドである。内部ではホスト非依存の文字runを先に解決し、
+その後で制御文字へ変換する。将来のネイティブSDK経路とプロファイル形式を共有する設計については
+[テキスト適用バックエンド](render-backends.md)を参照する。
+
 プレーンテキストを文字分類ごとのrunへまとめ、AviUtl2の制御文字へ展開した文字列を返す。
 `profile`を省略した場合は`"default"`を使用する。
 
@@ -80,6 +84,10 @@ end,
 通常の`字幕表示`を直接編集せずに利用する場合は、同梱する`合成フォント字幕.object`を
 追加する。この専用オブジェクトはPSDToolKit2の`mes()`を呼び出し、`セリフ準備@PSDToolKit`の
 テキストへ上記の`modifier`を適用する。設定方法は[合成フォント字幕オブジェクト](subtitle-object.md)を参照する。
+
+PSDToolKit2を使わない任意の本文には、同梱する`合成フォントテキスト.object`を追加するか、
+標準テキストオブジェクトのLua制御文字から直接`decorate`を呼び出せる。設定方法とコード例は
+[合成フォントテキストオブジェクト](text-object.md)を参照する。
 
 ## 文字分類
 
