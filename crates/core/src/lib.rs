@@ -133,6 +133,32 @@ const fn neutral_scale_ratio() -> f64 {
     1.0
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MetricUnit {
+    #[default]
+    Percent,
+    #[serde(rename = "px")]
+    Pixels,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EffectiveFontMetrics {
+    pub size_ratio: f64,
+    pub baseline_shift_em: f64,
+    pub tracking_adjust_em: f64,
+}
+
+impl Default for EffectiveFontMetrics {
+    fn default() -> Self {
+        Self {
+            size_ratio: 1.0,
+            baseline_shift_em: 0.0,
+            tracking_adjust_em: 0.0,
+        }
+    }
+}
+
 /// 1分類に適用するフォントと補正値。
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -148,6 +174,15 @@ pub struct FontAdjustment {
     pub baseline_shift_em: f64,
     /// 基準フォントサイズを1emとする字送り補正量。
     pub tracking_adjust_em: f64,
+    /// サイズ・ベースライン・字送りを絶対pxで保持する場合の単位指定。
+    #[serde(default)]
+    pub metric_unit: MetricUnit,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_px: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline_shift_px: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracking_adjust_px: Option<f64>,
     /// Illustratorの垂直比率に相当する倍率。`1.0`で変形なし。
     #[serde(default = "neutral_scale_ratio")]
     pub vertical_scale_ratio: f64,
@@ -164,8 +199,30 @@ impl FontAdjustment {
             size_ratio: 1.0,
             baseline_shift_em: 0.0,
             tracking_adjust_em: 0.0,
+            metric_unit: MetricUnit::Percent,
+            size_px: None,
+            baseline_shift_px: None,
+            tracking_adjust_px: None,
             vertical_scale_ratio: 1.0,
             horizontal_scale_ratio: 1.0,
+        }
+    }
+
+    pub fn effective_metrics(&self, base_font_size: Option<f64>) -> Option<EffectiveFontMetrics> {
+        match self.metric_unit {
+            MetricUnit::Percent => Some(EffectiveFontMetrics {
+                size_ratio: self.size_ratio,
+                baseline_shift_em: self.baseline_shift_em,
+                tracking_adjust_em: self.tracking_adjust_em,
+            }),
+            MetricUnit::Pixels => {
+                let base = base_font_size.filter(|value| value.is_finite() && *value > 0.0)?;
+                Some(EffectiveFontMetrics {
+                    size_ratio: self.size_px? / base,
+                    baseline_shift_em: self.baseline_shift_px? / base,
+                    tracking_adjust_em: self.tracking_adjust_px? / base,
+                })
+            }
         }
     }
 }
@@ -271,13 +328,14 @@ impl CompositeFontProfile {
     pub fn resolve(&self, codepoint: char) -> ResolvedFont {
         let class = classify_character(codepoint);
         let adjustment = self.adjustment_for(class);
+        let metrics = adjustment.effective_metrics(None).unwrap_or_default();
         let class_name = class.as_str();
 
         ResolvedFont {
             font_family: adjustment.font_family.clone(),
-            size_ratio: adjustment.size_ratio,
-            baseline_shift_em: adjustment.baseline_shift_em,
-            tracking_adjust_em: adjustment.tracking_adjust_em,
+            size_ratio: metrics.size_ratio,
+            baseline_shift_em: metrics.baseline_shift_em,
+            tracking_adjust_em: metrics.tracking_adjust_em,
             vertical_scale_ratio: adjustment.vertical_scale_ratio,
             horizontal_scale_ratio: adjustment.horizontal_scale_ratio,
             category: class_name.to_owned(),
@@ -375,6 +433,7 @@ mod tests {
             tracking_adjust_em: 0.0,
             vertical_scale_ratio: 1.0,
             horizontal_scale_ratio: 1.0,
+            ..FontAdjustment::neutral()
         }
     }
 
@@ -465,6 +524,27 @@ mod tests {
             assert_eq!(resolved.category, category);
             assert_eq!(resolved.rule_id, category);
         }
+    }
+
+    #[test]
+    fn pixel_metrics_are_resolved_against_the_base_font_size() {
+        let adjustment = FontAdjustment {
+            metric_unit: MetricUnit::Pixels,
+            size_px: Some(48.0),
+            baseline_shift_px: Some(3.0),
+            tracking_adjust_px: Some(-2.0),
+            ..FontAdjustment::neutral()
+        };
+
+        assert_eq!(
+            adjustment.effective_metrics(Some(24.0)),
+            Some(EffectiveFontMetrics {
+                size_ratio: 2.0,
+                baseline_shift_em: 0.125,
+                tracking_adjust_em: -2.0 / 24.0,
+            })
+        );
+        assert_eq!(adjustment.effective_metrics(None), None);
     }
 
     #[test]

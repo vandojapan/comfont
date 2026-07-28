@@ -1,4 +1,6 @@
 use std::{
+    cell::RefCell,
+    collections::HashMap,
     ffi::c_void,
     mem::size_of,
     path::PathBuf,
@@ -6,7 +8,7 @@ use std::{
 };
 
 use aviutl2::generic::EditHandle;
-use compositefont_core::ProfileDocument;
+use compositefont_core::{MetricUnit, ProfileDocument};
 use windows::{
     Win32::{
         Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM},
@@ -41,13 +43,13 @@ use windows::{
             Input::KeyboardAndMouse::EnableWindow,
             Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
             WindowsAndMessaging::{
-                BM_GETCHECK, BM_SETIMAGE, BN_CLICKED, BS_AUTOCHECKBOX, BS_DEFPUSHBUTTON, BS_ICON,
-                BS_PUSHLIKE, CB_ADDSTRING, CB_GETCOUNT, CB_GETCURSEL, CB_GETDROPPEDSTATE,
-                CB_RESETCONTENT, CB_SETCURSEL, CBN_DROPDOWN, CBN_SELCHANGE, CBS_AUTOHSCROLL,
-                CBS_DROPDOWN, CBS_DROPDOWNLIST, CBS_NOINTEGRALHEIGHT, CREATESTRUCTW, CS_HREDRAW,
-                CS_VREDRAW, CW_USEDEFAULT, CreateIconFromResourceEx, CreateWindowExW,
-                DefWindowProcW, DestroyWindow, DispatchMessageW, ES_AUTOHSCROLL, GWL_STYLE,
-                GetMessageW, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW,
+                BM_GETCHECK, BM_SETIMAGE, BN_CLICKED, BS_AUTOCHECKBOX, BS_AUTORADIOBUTTON,
+                BS_DEFPUSHBUTTON, BS_ICON, BS_PUSHLIKE, CB_ADDSTRING, CB_GETCOUNT, CB_GETCURSEL,
+                CB_GETDROPPEDSTATE, CB_RESETCONTENT, CB_SETCURSEL, CBN_DROPDOWN, CBN_SELCHANGE,
+                CBS_AUTOHSCROLL, CBS_DROPDOWN, CBS_DROPDOWNLIST, CBS_NOINTEGRALHEIGHT,
+                CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateIconFromResourceEx,
+                CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, ES_AUTOHSCROLL,
+                GWL_STYLE, GetMessageW, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW,
                 GetWindowTextW, HICON, HMENU, IDC_ARROW, IMAGE_ICON, IsDialogMessageW, IsWindow,
                 LB_GETTOPINDEX, LB_SETTOPINDEX, LR_DEFAULTCOLOR, LoadCursorW, MB_ICONERROR,
                 MB_ICONINFORMATION, MB_OK, MSG, MessageBoxW, RegisterClassW, SB_VERT, SW_HIDE,
@@ -67,7 +69,7 @@ use windows::{
 
 use crate::{
     font_collection::{self, FontRegistrationState, FontStageOutcome},
-    model::{CATEGORY_ROWS, EditorModel},
+    model::{CATEGORY_ROWS, EditorModel, MIXED_PREVIEW_SAMPLES, RowMoveDirection},
     storage::save_document,
 };
 
@@ -89,6 +91,7 @@ const DARK_BORDER: COLORREF = COLORREF(0x0056_524F);
 const HEADER_SUBCLASS_ID: usize = 1;
 const ICON_RESOURCE_VERSION: u32 = 0x0003_0000;
 const GUIDE_ICON_SIZE: i32 = 16;
+const PREVIEW_GLYPH_CACHE_LIMIT: usize = 4096;
 
 fn shared_dark_brush(slot: &OnceLock<usize>, color: COLORREF) -> HBRUSH {
     let raw = *slot.get_or_init(|| unsafe { CreateSolidBrush(color).0 as usize });
@@ -172,19 +175,24 @@ const ID_VERTICAL_SCALE: usize = 125;
 const ID_HORIZONTAL_SCALE: usize = 126;
 const ID_ROW_ADD: usize = 127;
 const ID_ROW_REMOVE: usize = 128;
+const ID_ROW_MOVE_UP: usize = 129;
 const ID_NEW: usize = 130;
 const ID_SAVE: usize = 131;
 const ID_DELETE: usize = 132;
+const ID_ROW_MOVE_DOWN: usize = 133;
 const ID_SAMPLE_VISIBLE: usize = 140;
 const ID_SPECIAL: usize = 141;
 const ID_BASELINE_GUIDE: usize = 142;
 const ID_GLYPH_BOUNDS_GUIDE: usize = 143;
+const ID_PREVIEW_CATEGORY_MODE: usize = 144;
+const ID_PREVIEW_MIXED_MODE: usize = 145;
 const ID_OK: usize = 1;
 const ID_CANCEL: usize = 2;
 
 #[derive(Clone, Copy, Default)]
 struct Controls {
     profile: HWND,
+    unit: HWND,
     list: HWND,
     selected_category: HWND,
     font: HWND,
@@ -195,9 +203,13 @@ struct Controls {
     horizontal_scale: HWND,
     row_add: HWND,
     row_remove: HWND,
+    row_move_up: HWND,
+    row_move_down: HWND,
     sample_visible: HWND,
     baseline_guide: HWND,
     glyph_bounds_guide: HWND,
+    preview_category_mode: HWND,
+    preview_mixed_mode: HWND,
     preview: HWND,
 }
 
@@ -213,6 +225,40 @@ struct DialogContext {
     sample_visible: bool,
     show_baseline_guide: bool,
     show_glyph_bounds_guide: bool,
+    preview_mode: PreviewMode,
+    preview_glyph_cache: RefCell<HashMap<PreviewGlyphCacheKey, Option<PreviewGlyphMetrics>>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct PreviewGlyphCacheKey {
+    font_family: String,
+    font_height: i32,
+    horizontal_scale_bits: u64,
+    vertical_scale_bits: u64,
+    character: char,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PreviewGlyphMetrics {
+    black_box_x: u32,
+    black_box_y: u32,
+    origin_x: i32,
+    origin_y: i32,
+}
+
+#[derive(Clone, Copy)]
+struct PreviewGlyphStyle<'font> {
+    font_family: &'font str,
+    font_height: i32,
+    horizontal_scale: f64,
+    vertical_scale: f64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum PreviewMode {
+    #[default]
+    Category,
+    Mixed,
 }
 
 impl DialogContext {
@@ -235,6 +281,8 @@ impl DialogContext {
             sample_visible: true,
             show_baseline_guide: true,
             show_glyph_bounds_guide: true,
+            preview_mode: PreviewMode::Category,
+            preview_glyph_cache: RefCell::new(HashMap::new()),
         }
     }
 }
@@ -435,13 +483,20 @@ unsafe extern "system" fn window_proc(
                     && notification.iItem >= 0
                     && notification.uNewState & LVIS_FOCUSED.0 != 0
                     && !context.refreshing;
+                let selection_changed = notification.hdr.idFrom == ID_LIST
+                    && notification.hdr.code == LVN_ITEMCHANGED
+                    && notification.iItem >= 0
+                    && (notification.uOldState ^ notification.uNewState) & LVIS_SELECTED.0 != 0
+                    && !context.refreshing;
                 if focused_row_changed
                     && select_table_row(&mut context.model, notification.iItem as usize)
                 {
                     unsafe {
                         refresh_editor_fields(context);
-                        refresh_row_remove_enabled(context);
                     }
+                }
+                if selection_changed {
+                    unsafe { refresh_row_action_buttons(context) };
                 }
             }
             LRESULT(0)
@@ -634,12 +689,12 @@ unsafe fn create_controls(window: HWND, context: &mut DialogContext) -> Result<(
             font,
         )?;
         create_label(window, instance, "単位：", 590, 20, 55, 24, 0, font)?;
-        let unit = create_child(
+        context.controls.unit = create_child(
             window,
             instance,
             w!("COMBOBOX"),
             "",
-            WS_CHILD | WS_VISIBLE | WINDOW_STYLE(CBS_DROPDOWNLIST as u32),
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(CBS_DROPDOWNLIST as u32),
             WINDOW_EX_STYLE(0),
             645,
             16,
@@ -648,8 +703,9 @@ unsafe fn create_controls(window: HWND, context: &mut DialogContext) -> Result<(
             ID_UNIT,
             font,
         )?;
-        combo_add(unit, "%");
-        SendMessageW(unit, CB_SETCURSEL, Some(WPARAM(0)), None);
+        combo_add(context.controls.unit, "%");
+        combo_add(context.controls.unit, "px");
+        SendMessageW(context.controls.unit, CB_SETCURSEL, Some(WPARAM(0)), None);
 
         context.controls.list = create_child(
             window,
@@ -708,8 +764,8 @@ unsafe fn create_controls(window: HWND, context: &mut DialogContext) -> Result<(
             ("サイズ", 70),
             ("ベース", 70),
             ("字送り", 70),
-            ("垂直比率", 85),
-            ("水平比率", 85),
+            ("垂直 (%)", 85),
+            ("水平 (%)", 85),
         ]
         .into_iter()
         .enumerate()
@@ -754,11 +810,39 @@ unsafe fn create_controls(window: HWND, context: &mut DialogContext) -> Result<(
             ID_ROW_REMOVE,
             font,
         )?;
+        context.controls.row_move_up = create_child(
+            window,
+            instance,
+            w!("BUTTON"),
+            "↑",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+            WINDOW_EX_STYLE(0),
+            96,
+            250,
+            32,
+            26,
+            ID_ROW_MOVE_UP,
+            font,
+        )?;
+        context.controls.row_move_down = create_child(
+            window,
+            instance,
+            w!("BUTTON"),
+            "↓",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+            WINDOW_EX_STYLE(0),
+            134,
+            250,
+            32,
+            26,
+            ID_ROW_MOVE_DOWN,
+            font,
+        )?;
         create_label(
             window,
             instance,
             "同じ文字種は上から優先",
-            105,
+            180,
             254,
             180,
             20,
@@ -803,10 +887,10 @@ unsafe fn create_controls(window: HWND, context: &mut DialogContext) -> Result<(
         context.controls.baseline = create_edit(window, instance, 355, 318, 60, ID_BASELINE, font)?;
         create_label(window, instance, "字送り", 425, 297, 60, 20, 0, font)?;
         context.controls.tracking = create_edit(window, instance, 420, 318, 60, ID_TRACKING, font)?;
-        create_label(window, instance, "垂直比率", 490, 297, 65, 20, 0, font)?;
+        create_label(window, instance, "垂直 (%)", 490, 297, 65, 20, 0, font)?;
         context.controls.vertical_scale =
             create_edit(window, instance, 485, 318, 65, ID_VERTICAL_SCALE, font)?;
-        create_label(window, instance, "水平比率", 560, 297, 65, 20, 0, font)?;
+        create_label(window, instance, "水平 (%)", 560, 297, 65, 20, 0, font)?;
         context.controls.horizontal_scale =
             create_edit(window, instance, 555, 318, 65, ID_HORIZONTAL_SCALE, font)?;
         create_child(
@@ -916,21 +1000,56 @@ unsafe fn create_controls(window: HWND, context: &mut DialogContext) -> Result<(
                 None,
             );
         }
-        create_label(
+        create_label(window, instance, "表示：", 340, 444, 45, 22, 0, font)?;
+        context.controls.preview_category_mode = create_child(
             window,
             instance,
-            "選択したプロファイルの文字種別プレビュー",
-            340,
-            444,
-            390,
-            22,
-            0,
+            w!("BUTTON"),
+            "文字種別",
+            WS_CHILD
+                | WS_VISIBLE
+                | WS_TABSTOP
+                | WS_GROUP
+                | WINDOW_STYLE((BS_AUTORADIOBUTTON | BS_PUSHLIKE) as u32),
+            WINDOW_EX_STYLE(0),
+            385,
+            439,
+            88,
+            28,
+            ID_PREVIEW_CATEGORY_MODE,
             font,
         )?;
+        context.controls.preview_mixed_mode = create_child(
+            window,
+            instance,
+            w!("BUTTON"),
+            "混在比較",
+            WS_CHILD
+                | WS_VISIBLE
+                | WS_TABSTOP
+                | WINDOW_STYLE((BS_AUTORADIOBUTTON | BS_PUSHLIKE) as u32),
+            WINDOW_EX_STYLE(0),
+            478,
+            439,
+            88,
+            28,
+            ID_PREVIEW_MIXED_MODE,
+            font,
+        )?;
+        SendMessageW(
+            context.controls.preview_category_mode,
+            windows::Win32::UI::WindowsAndMessaging::BM_SETCHECK,
+            Some(WPARAM(BST_CHECKED.0 as usize)),
+            None,
+        );
 
         context.controls.preview = create_preview(window, instance, context)?;
 
-        for combo in [context.controls.profile, unit, context.controls.font] {
+        for combo in [
+            context.controls.profile,
+            context.controls.unit,
+            context.controls.font,
+        ] {
             let _ = SetWindowTheme(combo, w!("DarkMode_CFD"), PCWSTR::null());
         }
 
@@ -1131,6 +1250,28 @@ unsafe fn handle_command(window: HWND, context: &mut DialogContext, id: usize, n
                 refresh_preview(context);
             }
         },
+        (ID_ROW_MOVE_UP, BN_CLICKED) | (ID_ROW_MOVE_DOWN, BN_CLICKED) => unsafe {
+            let mut rows = selected_table_rows(context.controls.list);
+            if rows.is_empty() {
+                rows.push(context.model.selected_table_row());
+            }
+            let direction = if id == ID_ROW_MOVE_UP {
+                RowMoveDirection::Up
+            } else {
+                RowMoveDirection::Down
+            };
+            let moved_rows = context.model.move_table_rows(&rows, direction);
+            if moved_rows != rows {
+                context.refreshing = true;
+                refresh_list(context);
+                restore_list_selection(context.controls.list, &moved_rows);
+                refresh_editor_fields(context);
+                context.refreshing = false;
+                refresh_preview(context);
+            } else {
+                refresh_row_action_buttons(context);
+            }
+        },
         (ID_PROFILE, CBN_SELCHANGE) if !context.refreshing => {
             if let Err(error) = unsafe { apply_editor_fields(context) } {
                 unsafe { show_error(Some(window), &error) };
@@ -1204,6 +1345,14 @@ unsafe fn handle_command(window: HWND, context: &mut DialogContext, id: usize, n
                 SendMessageW(context.controls.glyph_bounds_guide, BM_GETCHECK, None, None).0 as u32
                     == BST_CHECKED.0
             };
+            unsafe { refresh_preview(context) };
+        }
+        (ID_PREVIEW_CATEGORY_MODE, BN_CLICKED) => {
+            context.preview_mode = PreviewMode::Category;
+            unsafe { refresh_preview(context) };
+        }
+        (ID_PREVIEW_MIXED_MODE, BN_CLICKED) => {
+            context.preview_mode = PreviewMode::Mixed;
             unsafe { refresh_preview(context) };
         }
         (ID_SPECIAL, BN_CLICKED) => unsafe {
@@ -1285,6 +1434,12 @@ unsafe fn apply_editor_fields(context: &mut DialogContext) -> Result<(), String>
     let profile_name = unsafe { window_text(context.controls.profile) };
     context.model.rename_selected_profile(&profile_name)?;
     let font = unsafe { window_text(context.controls.font) };
+    let metric_unit = unsafe {
+        match SendMessageW(context.controls.unit, CB_GETCURSEL, None, None).0 {
+            1 => MetricUnit::Pixels,
+            _ => MetricUnit::Percent,
+        }
+    };
     let size = parse_number(&unsafe { window_text(context.controls.size) }, "サイズ")?;
     let baseline = parse_number(
         &unsafe { window_text(context.controls.baseline) },
@@ -1306,6 +1461,7 @@ unsafe fn apply_editor_fields(context: &mut DialogContext) -> Result<(), String>
     context.model.update_table_rows(
         &rows,
         font,
+        metric_unit,
         size,
         baseline,
         tracking,
@@ -1396,11 +1552,12 @@ unsafe fn refresh_selected_list_rows(context: &DialogContext) {
         } else {
             &adjustment.font_family
         };
+        let (size, baseline, tracking) = metric_values(adjustment);
         for (column, value) in [
             font.to_owned(),
-            percent(adjustment.size_ratio),
-            percent(adjustment.baseline_shift_em),
-            percent(adjustment.tracking_adjust_em),
+            metric_value(size, adjustment.metric_unit),
+            metric_value(baseline, adjustment.metric_unit),
+            metric_value(tracking, adjustment.metric_unit),
             percent(adjustment.vertical_scale_ratio),
             percent(adjustment.horizontal_scale_ratio),
         ]
@@ -1415,19 +1572,23 @@ unsafe fn refresh_selected_list_rows(context: &DialogContext) {
 unsafe fn refresh_editor_fields(context: &DialogContext) {
     let row = CATEGORY_ROWS[context.model.selected_category_index()];
     let adjustment = context.model.selected_adjustment();
+    let (size, baseline, tracking) = metric_values(adjustment);
     unsafe {
         set_text(context.controls.selected_category, row.label);
         set_text(context.controls.font, &adjustment.font_family);
-        refresh_row_remove_enabled(context);
-        set_text(context.controls.size, &plain_percent(adjustment.size_ratio));
-        set_text(
-            context.controls.baseline,
-            &plain_percent(adjustment.baseline_shift_em),
+        SendMessageW(
+            context.controls.unit,
+            CB_SETCURSEL,
+            Some(WPARAM(match adjustment.metric_unit {
+                MetricUnit::Percent => 0,
+                MetricUnit::Pixels => 1,
+            })),
+            None,
         );
-        set_text(
-            context.controls.tracking,
-            &plain_percent(adjustment.tracking_adjust_em),
-        );
+        refresh_row_action_buttons(context);
+        set_text(context.controls.size, &plain_number(size));
+        set_text(context.controls.baseline, &plain_number(baseline));
+        set_text(context.controls.tracking, &plain_number(tracking));
         set_text(
             context.controls.vertical_scale,
             &plain_percent(adjustment.vertical_scale_ratio),
@@ -1450,6 +1611,7 @@ unsafe fn insert_adjustment_row(
     } else {
         adjustment.font_family.clone()
     };
+    let (size, baseline, tracking) = metric_values(adjustment);
     unsafe {
         list_insert_row(
             list,
@@ -1457,9 +1619,9 @@ unsafe fn insert_adjustment_row(
             [
                 label.to_owned(),
                 font,
-                percent(adjustment.size_ratio),
-                percent(adjustment.baseline_shift_em),
-                percent(adjustment.tracking_adjust_em),
+                metric_value(size, adjustment.metric_unit),
+                metric_value(baseline, adjustment.metric_unit),
+                metric_value(tracking, adjustment.metric_unit),
                 percent(adjustment.vertical_scale_ratio),
                 percent(adjustment.horizontal_scale_ratio),
             ],
@@ -1490,11 +1652,43 @@ unsafe fn selected_table_rows(list: HWND) -> Vec<usize> {
     rows
 }
 
-unsafe fn refresh_row_remove_enabled(context: &DialogContext) {
-    let enabled = unsafe { selected_table_rows(context.controls.list) }
-        .into_iter()
-        .any(|row| context.model.is_additional_table_row(row));
-    let _ = unsafe { EnableWindow(context.controls.row_remove, enabled) };
+unsafe fn restore_list_selection(list: HWND, rows: &[usize]) {
+    for &row in rows {
+        let mut item = LVITEMW {
+            stateMask: LIST_VIEW_ITEM_STATE_FLAGS(LVIS_SELECTED.0),
+            state: LIST_VIEW_ITEM_STATE_FLAGS(LVIS_SELECTED.0),
+            ..Default::default()
+        };
+        unsafe {
+            SendMessageW(
+                list,
+                LVM_SETITEMSTATE,
+                Some(WPARAM(row)),
+                Some(LPARAM((&mut item as *mut LVITEMW) as isize)),
+            );
+        }
+    }
+}
+
+unsafe fn refresh_row_action_buttons(context: &DialogContext) {
+    let mut rows = unsafe { selected_table_rows(context.controls.list) };
+    if rows.is_empty() {
+        rows.push(context.model.selected_table_row());
+    }
+    let can_remove = rows
+        .iter()
+        .any(|&row| context.model.is_additional_table_row(row));
+    let can_move_up = context
+        .model
+        .can_move_table_rows(&rows, RowMoveDirection::Up);
+    let can_move_down = context
+        .model
+        .can_move_table_rows(&rows, RowMoveDirection::Down);
+    unsafe {
+        let _ = EnableWindow(context.controls.row_remove, can_remove);
+        let _ = EnableWindow(context.controls.row_move_up, can_move_up);
+        let _ = EnableWindow(context.controls.row_move_down, can_move_down);
+    }
 }
 
 fn select_table_row(model: &mut EditorModel, row: usize) -> bool {
@@ -1503,7 +1697,7 @@ fn select_table_row(model: &mut EditorModel, row: usize) -> bool {
 
 unsafe fn refresh_preview(context: &DialogContext) {
     if context.sample_visible && !context.controls.preview.is_invalid() {
-        let _ = unsafe { InvalidateRect(Some(context.controls.preview), None, true) };
+        let _ = unsafe { InvalidateRect(Some(context.controls.preview), None, false) };
     }
 }
 
@@ -1795,18 +1989,31 @@ unsafe fn paint_preview(window: HWND, context: &DialogContext) {
         let glyph_pen = unsafe { CreatePen(PS_SOLID, 1, COLORREF(0x00C0_C000)) };
         let old_pen = unsafe { SelectObject(dc, HGDIOBJ(baseline_pen.0)) };
         let profile = context.model.selected_profile();
+        let mut glyph_cache = context.preview_glyph_cache.borrow_mut();
         let mut x = 15;
         let mut y = 25;
-        for row in CATEGORY_ROWS {
-            let adjustment = profile.adjustment_for(row.class);
-            let height =
-                (PREVIEW_FONT_HEIGHT * adjustment.size_ratio.clamp(0.5, 2.0)).round() as i32;
-            let family = if adjustment.font_family.is_empty() {
+        let preview_runs = match context.preview_mode {
+            PreviewMode::Category => CATEGORY_ROWS
+                .iter()
+                .map(|row| (row.class, row.sample))
+                .collect::<Vec<_>>(),
+            PreviewMode::Mixed => MIXED_PREVIEW_SAMPLES
+                .iter()
+                .map(|sample| (sample.class, sample.text))
+                .collect::<Vec<_>>(),
+        };
+        for (class, sample) in preview_runs {
+            let adjustment = profile.adjustment_for(class);
+            let metrics = adjustment
+                .effective_metrics(Some(PREVIEW_FONT_HEIGHT))
+                .unwrap_or_default();
+            let height = (PREVIEW_FONT_HEIGHT * metrics.size_ratio.clamp(0.5, 2.0)).round() as i32;
+            let family_name = if adjustment.font_family.is_empty() {
                 "Yu Gothic UI"
             } else {
                 &adjustment.font_family
             };
-            let family = wide(family);
+            let family = wide(family_name);
             let font = unsafe {
                 CreateFontW(
                     -height,
@@ -1826,8 +2033,8 @@ unsafe fn paint_preview(window: HWND, context: &DialogContext) {
                 )
             };
             let old = unsafe { SelectObject(dc, HGDIOBJ(font.0)) };
-            let tracking = (adjustment.tracking_adjust_em * height as f64).round() as i32;
-            let run_width = unsafe { measure_preview_run(dc, row.sample, tracking) };
+            let tracking = (metrics.tracking_adjust_em * PREVIEW_FONT_HEIGHT).round() as i32;
+            let run_width = unsafe { measure_preview_run(dc, sample, tracking) };
             let horizontal_scale = adjustment.horizontal_scale_ratio.clamp(0.01, 10.0);
             let vertical_scale = adjustment.vertical_scale_ratio.clamp(0.01, 10.0);
             let rendered_width = (run_width as f64 * horizontal_scale).round() as i32;
@@ -1835,7 +2042,7 @@ unsafe fn paint_preview(window: HWND, context: &DialogContext) {
                 x = 15;
                 y += PREVIEW_LINE_HEIGHT;
             }
-            let baseline_shift = (adjustment.baseline_shift_em * height as f64).round() as i32;
+            let baseline_shift = (metrics.baseline_shift_em * PREVIEW_FONT_HEIGHT).round() as i32;
             let draw_y = y - baseline_shift;
             let mut metrics = TEXTMETRICW::default();
             let _ = unsafe { GetTextMetricsW(dc, &mut metrics) };
@@ -1845,7 +2052,7 @@ unsafe fn paint_preview(window: HWND, context: &DialogContext) {
                 let _ = SetWorldTransform(dc, &transform);
                 draw_preview_run(
                     dc,
-                    row.sample,
+                    sample,
                     x,
                     draw_y,
                     baseline_y,
@@ -1855,6 +2062,13 @@ unsafe fn paint_preview(window: HWND, context: &DialogContext) {
                     HGDIOBJ(glyph_pen.0),
                     context.show_baseline_guide,
                     context.show_glyph_bounds_guide,
+                    PreviewGlyphStyle {
+                        font_family: family_name,
+                        font_height: height,
+                        horizontal_scale,
+                        vertical_scale,
+                    },
+                    &mut glyph_cache,
                 );
                 let _ = SetWorldTransform(
                     dc,
@@ -1867,7 +2081,7 @@ unsafe fn paint_preview(window: HWND, context: &DialogContext) {
                 SelectObject(dc, old);
                 let _ = DeleteObject(HGDIOBJ(font.0));
             }
-            x += rendered_width + 22;
+            x += rendered_width + preview_run_gap(context.preview_mode, tracking, horizontal_scale);
         }
         unsafe {
             SelectObject(dc, old_pen);
@@ -1876,6 +2090,13 @@ unsafe fn paint_preview(window: HWND, context: &DialogContext) {
         }
     }
     let _ = unsafe { EndPaint(window, &paint) };
+}
+
+fn preview_run_gap(mode: PreviewMode, tracking: i32, horizontal_scale: f64) -> i32 {
+    match mode {
+        PreviewMode::Category => 22,
+        PreviewMode::Mixed => (tracking as f64 * horizontal_scale).round() as i32,
+    }
 }
 
 fn scale_about(x: i32, y: i32, horizontal: f32, vertical: f32) -> XFORM {
@@ -1917,6 +2138,8 @@ unsafe fn draw_preview_run(
     glyph_pen: HGDIOBJ,
     show_baseline: bool,
     show_glyph_bounds: bool,
+    glyph_style: PreviewGlyphStyle<'_>,
+    glyph_cache: &mut HashMap<PreviewGlyphCacheKey, Option<PreviewGlyphMetrics>>,
 ) {
     if show_baseline {
         unsafe {
@@ -1930,12 +2153,6 @@ unsafe fn draw_preview_run(
         }
     }
 
-    let identity = MAT2 {
-        eM11: FIXED { value: 1, fract: 0 },
-        eM12: FIXED::default(),
-        eM21: FIXED::default(),
-        eM22: FIXED { value: 1, fract: 0 },
-    };
     let mut cursor_x = x;
     let character_count = text.chars().count();
     for (index, character) in text.chars().enumerate() {
@@ -1945,32 +2162,72 @@ unsafe fn draw_preview_run(
         let _ = unsafe { GetTextExtentPoint32W(dc, encoded, &mut character_extent) };
         let _ = unsafe { TextOutW(dc, cursor_x, draw_y, encoded) };
 
-        if show_glyph_bounds && character as u32 <= u16::MAX as u32 {
-            let mut glyph = GLYPHMETRICS::default();
-            let result = unsafe {
-                GetGlyphOutlineW(
-                    dc,
-                    character as u32,
-                    GGO_METRICS,
-                    &mut glyph,
-                    0,
-                    None,
-                    &identity,
-                )
-            };
-            if result != GDI_ERROR as u32 && glyph.gmBlackBoxX > 0 && glyph.gmBlackBoxY > 0 {
-                let left = cursor_x + glyph.gmptGlyphOrigin.x;
-                let top = baseline_y - glyph.gmptGlyphOrigin.y;
-                let right = left + glyph.gmBlackBoxX as i32;
-                let bottom = top + glyph.gmBlackBoxY as i32;
-                unsafe { draw_box(dc, left, top, right, bottom) };
-            }
+        if show_glyph_bounds
+            && character as u32 <= u16::MAX as u32
+            && let Some(glyph) =
+                unsafe { cached_preview_glyph_metrics(dc, character, glyph_style, glyph_cache) }
+        {
+            let left = cursor_x + glyph.origin_x;
+            let top = baseline_y - glyph.origin_y;
+            let right = left + glyph.black_box_x as i32;
+            let bottom = top + glyph.black_box_y as i32;
+            unsafe { draw_box(dc, left, top, right, bottom) };
         }
         cursor_x += character_extent.cx;
         if index + 1 < character_count {
             cursor_x += tracking;
         }
     }
+}
+
+unsafe fn cached_preview_glyph_metrics(
+    dc: HDC,
+    character: char,
+    style: PreviewGlyphStyle<'_>,
+    cache: &mut HashMap<PreviewGlyphCacheKey, Option<PreviewGlyphMetrics>>,
+) -> Option<PreviewGlyphMetrics> {
+    let key = PreviewGlyphCacheKey {
+        font_family: style.font_family.to_owned(),
+        font_height: style.font_height,
+        horizontal_scale_bits: style.horizontal_scale.to_bits(),
+        vertical_scale_bits: style.vertical_scale.to_bits(),
+        character,
+    };
+    if let Some(metrics) = cache.get(&key) {
+        return *metrics;
+    }
+
+    let identity = MAT2 {
+        eM11: FIXED { value: 1, fract: 0 },
+        eM12: FIXED::default(),
+        eM21: FIXED::default(),
+        eM22: FIXED { value: 1, fract: 0 },
+    };
+    let mut glyph = GLYPHMETRICS::default();
+    let result = unsafe {
+        GetGlyphOutlineW(
+            dc,
+            character as u32,
+            GGO_METRICS,
+            &mut glyph,
+            0,
+            None,
+            &identity,
+        )
+    };
+    let metrics = (result != GDI_ERROR as u32 && glyph.gmBlackBoxX > 0 && glyph.gmBlackBoxY > 0)
+        .then_some(PreviewGlyphMetrics {
+            black_box_x: glyph.gmBlackBoxX,
+            black_box_y: glyph.gmBlackBoxY,
+            origin_x: glyph.gmptGlyphOrigin.x,
+            origin_y: glyph.gmptGlyphOrigin.y,
+        });
+
+    if cache.len() >= PREVIEW_GLYPH_CACHE_LIMIT {
+        cache.clear();
+    }
+    cache.insert(key, metrics);
+    metrics
 }
 
 unsafe fn draw_box(dc: HDC, left: i32, top: i32, right: i32, bottom: i32) {
@@ -2005,6 +2262,29 @@ fn percent(value: f64) -> String {
     format!("{}%", plain_percent(value))
 }
 
+fn metric_values(adjustment: &compositefont_core::FontAdjustment) -> (f64, f64, f64) {
+    match adjustment.metric_unit {
+        MetricUnit::Percent => (
+            adjustment.size_ratio * 100.0,
+            adjustment.baseline_shift_em * 100.0,
+            adjustment.tracking_adjust_em * 100.0,
+        ),
+        MetricUnit::Pixels => (
+            adjustment.size_px.unwrap_or_default(),
+            adjustment.baseline_shift_px.unwrap_or_default(),
+            adjustment.tracking_adjust_px.unwrap_or_default(),
+        ),
+    }
+}
+
+fn metric_value(value: f64, unit: MetricUnit) -> String {
+    let suffix = match unit {
+        MetricUnit::Percent => "%",
+        MetricUnit::Pixels => "px",
+    };
+    format!("{}{suffix}", plain_number(value))
+}
+
 fn plain_percent(value: f64) -> String {
     plain_number(value * 100.0)
 }
@@ -2024,8 +2304,9 @@ fn wide(value: &str) -> Vec<u16> {
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_font_names, numeric_wheel_value, save_confirmation_message, scale_about,
-        select_table_row, tracked_run_width, wheel_target_top,
+        PreviewMode, normalize_font_names, numeric_wheel_value, preview_run_gap,
+        save_confirmation_message, scale_about, select_table_row, tracked_run_width,
+        wheel_target_top,
     };
     use crate::{font_collection::FontStageOutcome, model::EditorModel};
     use compositefont_core::ProfileDocument;
@@ -2077,6 +2358,13 @@ mod tests {
         assert_eq!(tracked_run_width(&[10, 12, 8], 3), 36);
         assert_eq!(tracked_run_width(&[10, 12, 8], -2), 26);
         assert_eq!(tracked_run_width(&[10], 20), 10);
+    }
+
+    #[test]
+    fn mixed_preview_places_different_classes_next_to_each_other() {
+        assert_eq!(preview_run_gap(PreviewMode::Category, 8, 1.25), 22);
+        assert_eq!(preview_run_gap(PreviewMode::Mixed, 8, 1.25), 10);
+        assert_eq!(preview_run_gap(PreviewMode::Mixed, -8, 0.5), -4);
     }
 
     #[test]

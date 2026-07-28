@@ -1,5 +1,6 @@
 use compositefont_core::{
-    CharacterClass, CompositeFontProfile, DEFAULT_PROFILE_NAME, FontAdjustment, ProfileDocument,
+    CharacterClass, CompositeFontProfile, DEFAULT_PROFILE_NAME, FontAdjustment, MetricUnit,
+    ProfileDocument,
 };
 
 pub const CATEGORY_ROWS: [CategoryRow; 7] = [
@@ -12,11 +13,41 @@ pub const CATEGORY_ROWS: [CategoryRow; 7] = [
     CategoryRow::new(CharacterClass::Other, "その他", "ＡéЖΩ"),
 ];
 
+pub const MIXED_PREVIEW_SAMPLES: [PreviewSample; 21] = [
+    PreviewSample::new(CharacterClass::Kanji, "国"),
+    PreviewSample::new(CharacterClass::Western, "A"),
+    PreviewSample::new(CharacterClass::Hiragana, "あ"),
+    PreviewSample::new(CharacterClass::Digit, "1"),
+    PreviewSample::new(CharacterClass::Symbol, "、"),
+    PreviewSample::new(CharacterClass::Katakana, "カ"),
+    PreviewSample::new(CharacterClass::Other, "é"),
+    PreviewSample::new(CharacterClass::Kanji, "漢"),
+    PreviewSample::new(CharacterClass::Western, "B"),
+    PreviewSample::new(CharacterClass::Hiragana, "い"),
+    PreviewSample::new(CharacterClass::Digit, "2"),
+    PreviewSample::new(CharacterClass::Symbol, "。"),
+    PreviewSample::new(CharacterClass::Katakana, "ナ"),
+    PreviewSample::new(CharacterClass::Other, "Ж"),
+    PreviewSample::new(CharacterClass::Kanji, "字"),
+    PreviewSample::new(CharacterClass::Western, "C"),
+    PreviewSample::new(CharacterClass::Hiragana, "う"),
+    PreviewSample::new(CharacterClass::Digit, "3"),
+    PreviewSample::new(CharacterClass::Symbol, "！"),
+    PreviewSample::new(CharacterClass::Katakana, "タ"),
+    PreviewSample::new(CharacterClass::Other, "Ω"),
+];
+
 #[derive(Clone, Copy, Debug)]
 pub struct CategoryRow {
     pub class: CharacterClass,
     pub label: &'static str,
     pub sample: &'static str,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowMoveDirection {
+    Up,
+    Down,
 }
 
 impl CategoryRow {
@@ -26,6 +57,18 @@ impl CategoryRow {
             label,
             sample,
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct PreviewSample {
+    pub class: CharacterClass,
+    pub text: &'static str,
+}
+
+impl PreviewSample {
+    const fn new(class: CharacterClass, text: &'static str) -> Self {
+        Self { class, text }
     }
 }
 
@@ -156,6 +199,82 @@ impl EditorModel {
         removed
     }
 
+    pub fn can_move_table_rows(&self, rows: &[usize], direction: RowMoveDirection) -> bool {
+        self.selected_row_flags(rows)
+            .into_iter()
+            .any(|selected| match direction {
+                RowMoveDirection::Up => {
+                    (1..selected.len()).any(|index| selected[index] && !selected[index - 1])
+                }
+                RowMoveDirection::Down => (0..selected.len().saturating_sub(1))
+                    .any(|index| selected[index] && !selected[index + 1]),
+            })
+    }
+
+    pub fn move_table_rows(&mut self, rows: &[usize], direction: RowMoveDirection) -> Vec<usize> {
+        let mut selected_by_category = self.selected_row_flags(rows);
+        let mut moved = false;
+
+        for (category, selected) in selected_by_category.iter_mut().enumerate() {
+            let class = CATEGORY_ROWS[category].class;
+            let mut adjustments = std::iter::once(self.selected_profile().adjustment_for(class))
+                .chain(self.selected_profile().fallbacks_for(class))
+                .cloned()
+                .collect::<Vec<_>>();
+            let mut group_moved = false;
+            match direction {
+                RowMoveDirection::Up => {
+                    for index in 1..selected.len() {
+                        if selected[index] && !selected[index - 1] {
+                            adjustments.swap(index, index - 1);
+                            selected.swap(index, index - 1);
+                            group_moved = true;
+                        }
+                    }
+                }
+                RowMoveDirection::Down => {
+                    for index in (0..selected.len().saturating_sub(1)).rev() {
+                        if selected[index] && !selected[index + 1] {
+                            adjustments.swap(index, index + 1);
+                            selected.swap(index, index + 1);
+                            group_moved = true;
+                        }
+                    }
+                }
+            }
+            if group_moved {
+                let profile = self.selected_profile_mut();
+                *profile.adjustment_for_mut(class) = adjustments.remove(0);
+                *profile.fallbacks_for_mut(class) = adjustments;
+                moved = true;
+            }
+        }
+
+        if !moved {
+            return rows.to_vec();
+        }
+
+        let mut moved_rows = Vec::new();
+        let mut first_row = 0;
+        for (category, selected) in selected_by_category.iter().enumerate() {
+            moved_rows.extend(
+                selected
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, selected)| **selected)
+                    .map(|(index, _)| first_row + index),
+            );
+            first_row += 1 + self
+                .selected_profile()
+                .fallbacks_for(CATEGORY_ROWS[category].class)
+                .len();
+        }
+        if let Some(&first) = moved_rows.first() {
+            self.select_table_row(first);
+        }
+        moved_rows
+    }
+
     pub fn selected_table_row(&self) -> usize {
         let preceding_rows = CATEGORY_ROWS[..self.selected_category]
             .iter()
@@ -201,6 +320,19 @@ impl EditorModel {
             first_row += 1 + fallback_count;
         }
         None
+    }
+
+    fn selected_row_flags(&self, rows: &[usize]) -> Vec<Vec<bool>> {
+        let mut selected = CATEGORY_ROWS
+            .iter()
+            .map(|row| vec![false; 1 + self.selected_profile().fallbacks_for(row.class).len()])
+            .collect::<Vec<_>>();
+        for &row in rows {
+            if let Some((category, fallback)) = self.table_row_target(row) {
+                selected[category][fallback.map_or(0, |index| index + 1)] = true;
+            }
+        }
+        selected
     }
 
     pub fn create_profile(&mut self) {
@@ -268,6 +400,7 @@ impl EditorModel {
         &mut self,
         rows: &[usize],
         font_family: String,
+        metric_unit: MetricUnit,
         size_percent: f64,
         baseline_percent: f64,
         tracking_percent: f64,
@@ -276,6 +409,7 @@ impl EditorModel {
     ) -> Result<(), String> {
         let adjustment = make_adjustment(
             font_family,
+            metric_unit,
             size_percent,
             baseline_percent,
             tracking_percent,
@@ -303,6 +437,7 @@ impl EditorModel {
 #[allow(clippy::too_many_arguments)]
 fn make_adjustment(
     font_family: String,
+    metric_unit: MetricUnit,
     size_percent: f64,
     baseline_percent: f64,
     tracking_percent: f64,
@@ -327,12 +462,42 @@ fn make_adjustment(
         return Err("垂直比率と水平比率は0より大きい値にしてください。".to_owned());
     }
 
+    let (
+        size_ratio,
+        baseline_shift_em,
+        tracking_adjust_em,
+        size_px,
+        baseline_shift_px,
+        tracking_adjust_px,
+    ) = match metric_unit {
+        MetricUnit::Percent => (
+            size_percent / 100.0,
+            baseline_percent / 100.0,
+            tracking_percent / 100.0,
+            None,
+            None,
+            None,
+        ),
+        MetricUnit::Pixels => (
+            1.0,
+            0.0,
+            0.0,
+            Some(size_percent),
+            Some(baseline_percent),
+            Some(tracking_percent),
+        ),
+    };
+
     Ok(FontAdjustment {
         font_family: font_family.trim().to_owned(),
         fallback_font_families: Vec::new(),
-        size_ratio: size_percent / 100.0,
-        baseline_shift_em: baseline_percent / 100.0,
-        tracking_adjust_em: tracking_percent / 100.0,
+        size_ratio,
+        baseline_shift_em,
+        tracking_adjust_em,
+        metric_unit,
+        size_px,
+        baseline_shift_px,
+        tracking_adjust_px,
         vertical_scale_ratio: vertical_scale_percent / 100.0,
         horizontal_scale_ratio: horizontal_scale_percent / 100.0,
     })
@@ -394,7 +559,16 @@ mod tests {
         let mut model = EditorModel::new(ProfileDocument::with_builtin_default());
         model.select_category(4);
         model
-            .update_table_rows(&[4], "DIN 2014".to_owned(), 115.0, -2.0, 3.5, 92.0, 108.0)
+            .update_table_rows(
+                &[4],
+                "DIN 2014".to_owned(),
+                MetricUnit::Percent,
+                115.0,
+                -2.0,
+                3.5,
+                92.0,
+                108.0,
+            )
             .unwrap();
 
         let western = &model.selected_profile().western;
@@ -407,12 +581,38 @@ mod tests {
     }
 
     #[test]
+    fn stores_pixel_metrics_without_changing_fixed_scale_ratios() {
+        let mut model = EditorModel::new(ProfileDocument::with_builtin_default());
+        model
+            .update_table_rows(
+                &[0],
+                "Pixel Font".to_owned(),
+                MetricUnit::Pixels,
+                48.0,
+                3.0,
+                -2.0,
+                90.0,
+                110.0,
+            )
+            .unwrap();
+
+        let adjustment = &model.selected_profile().kanji;
+        assert_eq!(adjustment.metric_unit, MetricUnit::Pixels);
+        assert_eq!(adjustment.size_px, Some(48.0));
+        assert_eq!(adjustment.baseline_shift_px, Some(3.0));
+        assert_eq!(adjustment.tracking_adjust_px, Some(-2.0));
+        assert_eq!(adjustment.vertical_scale_ratio, 0.9);
+        assert_eq!(adjustment.horizontal_scale_ratio, 1.1);
+    }
+
+    #[test]
     fn adds_updates_and_removes_ordered_kanji_rows() {
         let mut model = EditorModel::new(ProfileDocument::with_builtin_default());
         model
             .update_table_rows(
                 &[0],
                 "A-OTF Gothic Std".to_owned(),
+                MetricUnit::Percent,
                 100.0,
                 0.0,
                 0.0,
@@ -425,6 +625,7 @@ mod tests {
             .update_table_rows(
                 &[1],
                 "A-OTF Gothic Pr6".to_owned(),
+                MetricUnit::Percent,
                 105.0,
                 1.0,
                 2.0,
@@ -458,6 +659,83 @@ mod tests {
         assert_eq!(model.selected_profile().hiragana_fallbacks.len(), 1);
         assert!(model.selected_profile().kanji_fallbacks.is_empty());
         assert_eq!(model.selected_table_row(), 2);
+    }
+
+    #[test]
+    fn moves_multiple_fallback_rows_as_an_ordered_block() {
+        let mut model = EditorModel::new(ProfileDocument::with_builtin_default());
+        for name in ["A", "B", "C"] {
+            model.add_selected_adjustment();
+            model
+                .selected_profile_mut()
+                .kanji_fallbacks
+                .last_mut()
+                .unwrap()
+                .font_family = name.to_owned();
+        }
+
+        assert!(model.can_move_table_rows(&[2, 3], RowMoveDirection::Up));
+        assert_eq!(
+            model.move_table_rows(&[2, 3], RowMoveDirection::Up),
+            vec![1, 2]
+        );
+        assert_eq!(
+            model
+                .selected_profile()
+                .kanji_fallbacks
+                .iter()
+                .map(|adjustment| adjustment.font_family.as_str())
+                .collect::<Vec<_>>(),
+            vec!["B", "C", "A"]
+        );
+
+        assert!(model.can_move_table_rows(&[1, 2], RowMoveDirection::Down));
+        assert_eq!(
+            model.move_table_rows(&[1, 2], RowMoveDirection::Down),
+            vec![2, 3]
+        );
+        assert_eq!(
+            model
+                .selected_profile()
+                .kanji_fallbacks
+                .iter()
+                .map(|adjustment| adjustment.font_family.as_str())
+                .collect::<Vec<_>>(),
+            vec!["A", "B", "C"]
+        );
+    }
+
+    #[test]
+    fn moves_the_primary_row_and_stays_inside_group_edges() {
+        let mut model = EditorModel::new(ProfileDocument::with_builtin_default());
+        model.selected_profile_mut().kanji.font_family = "Primary".to_owned();
+        model.add_selected_adjustment();
+        model
+            .selected_profile_mut()
+            .kanji_fallbacks
+            .last_mut()
+            .unwrap()
+            .font_family = "A".to_owned();
+        model.add_selected_adjustment();
+        model
+            .selected_profile_mut()
+            .kanji_fallbacks
+            .last_mut()
+            .unwrap()
+            .font_family = "B".to_owned();
+
+        assert!(!model.can_move_table_rows(&[0], RowMoveDirection::Up));
+        assert!(model.can_move_table_rows(&[0], RowMoveDirection::Down));
+        assert_eq!(model.move_table_rows(&[0], RowMoveDirection::Down), vec![1]);
+        assert_eq!(model.selected_profile().kanji.font_family, "A");
+        assert_eq!(
+            model.selected_profile().kanji_fallbacks[0].font_family,
+            "Primary"
+        );
+        assert!(model.can_move_table_rows(&[1], RowMoveDirection::Up));
+        assert!(!model.can_move_table_rows(&[2], RowMoveDirection::Down));
+        assert_eq!(model.move_table_rows(&[1], RowMoveDirection::Up), vec![0]);
+        assert_eq!(model.selected_profile().kanji.font_family, "Primary");
     }
 
     #[test]
@@ -495,6 +773,7 @@ mod tests {
             .update_table_rows(
                 &[1, 5],
                 "Shared Font".to_owned(),
+                MetricUnit::Percent,
                 110.0,
                 -1.0,
                 2.0,
@@ -528,6 +807,20 @@ mod tests {
                     "{character:?} in the {} preview sample",
                     row.label
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn mixed_preview_alternates_valid_character_classes() {
+        for (index, sample) in MIXED_PREVIEW_SAMPLES.iter().enumerate() {
+            assert_eq!(sample.text.chars().count(), 1);
+            assert_eq!(
+                compositefont_core::classify_character(sample.text.chars().next().unwrap()),
+                sample.class
+            );
+            if let Some(previous) = index.checked_sub(1) {
+                assert_ne!(MIXED_PREVIEW_SAMPLES[previous].class, sample.class);
             }
         }
     }

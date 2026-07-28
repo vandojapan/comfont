@@ -1,12 +1,12 @@
-# compositefont script module API v7
+# compositefont script module API v8
 
 `compositefont.mod2`はAviUtl2の制御スクリプトから`compositefont`として参照する。
 
 ## `compositefont.api_version()`
 
-戻り値は整数のAPIバージョン。現在は`7`。
+戻り値は整数のAPIバージョン。現在は`8`。
 
-## `compositefont.resolve(character, profile?)`
+## `compositefont.resolve(character, profile?, base_font_size?)`
 
 UTF-8文字列として渡した1個のUnicodeスカラー値を解決する。`profile`を省略した場合は
 `"default"`を使用する。空文字、複数のUnicodeスカラー値、不明なプロファイルはエラーになる。
@@ -14,7 +14,7 @@ UTF-8文字列として渡した1個のUnicodeスカラー値を解決する。`
 ```lua
 local font_family, size_ratio, baseline_shift_em, tracking_adjust_em,
       vertical_scale_ratio, horizontal_scale_ratio, category, rule_id =
-    compositefont.resolve(character, "subtitle")
+    compositefont.resolve(character, "subtitle", 64)
 ```
 
 戻り値は次の8個の多値。末尾2値は診断用なので、通常の適用処理では無視してよい。
@@ -28,10 +28,13 @@ local font_family, size_ratio, baseline_shift_em, tracking_adjust_em,
 7. `category: string` — 後述する7分類の名前
 8. `rule_id: string` — 通常はカテゴリ名。代替候補を使った場合は`category:fallback:N`
 
+第3引数`base_font_size`はpx指定の行を倍率へ換算するために使用する。省略時にpx指定の行が
+選ばれた場合は、フォントと垂直・水平比率だけを返し、サイズ・ベースライン・字送りは中立値になる。
+
 `character`は書記素クラスタではなくUnicodeスカラー値単位である。例えば異体字セレクタや
 結合文字を含む文字列は複数回に分けて解決する。
 
-## `compositefont.resolve_codepoint(codepoint, profile?)`
+## `compositefont.resolve_codepoint(codepoint, profile?, base_font_size?)`
 
 `resolve`と同じ結果を返すが、第1引数にUnicodeコードポイントの整数値を取る。Lua側で
 UTF-8文字列をUnicodeスカラー値単位に分割できない場合の入口として使用する。サロゲートや
@@ -39,7 +42,7 @@ UTF-8文字列をUnicodeスカラー値単位に分割できない場合の入�
 
 ```lua
 local font, scale, shift, tracking, vertical_scale, horizontal_scale =
-    compositefont.resolve_codepoint(0x6F22, "subtitle") -- 漢
+    compositefont.resolve_codepoint(0x6F22, "subtitle", 64) -- 漢
 ```
 
 ## `compositefont.decorate(text, profile?, base_font_size?, base_char_spacing?)`
@@ -51,12 +54,21 @@ local font, scale, shift, tracking, vertical_scale, horizontal_scale =
 プレーンテキストを文字分類ごとのrunへまとめ、AviUtl2の制御文字へ展開した文字列を返す。
 `profile`を省略した場合は`"default"`を使用する。
 
-`base_font_size`と`base_char_spacing`を渡すと、em単位のベースラインと字送りも
-AviUtl2の絶対値へ換算する。これらを取得できない場合は、フォント、サイズ、垂直比率、
-水平比率だけを展開し、ベースラインと字送りは変更しない。
+`base_font_size`と`base_char_spacing`を渡すと、em単位またはpx単位のサイズ、ベースライン、
+字送りをAviUtl2の値へ換算する。`base_font_size`を取得できない場合、px指定行の3値は変更せず、
+フォントと垂直・水平比率だけを展開する。
 
 ```lua
 local decorated = compositefont.decorate(text, "subtitle", 100, 0)
+```
+
+px指定の行は`metric_unit: "px"`と絶対値を保存する。垂直・水平比率はpx指定時も倍率のまま保持する。
+
+```json
+"metric_unit": "px",
+"size_px": 48.0,
+"baseline_shift_px": 3.0,
+"tracking_adjust_px": -2.0
 ```
 
 初期実装はPSDToolKit2の字幕表示を壊さないことを優先し、入力にASCIIの`<`が1個でもあれば
@@ -141,6 +153,12 @@ AviUtl2へプライベート登録されたフォントもFontManager経由で�
 
 `resolve`の`rule_id`は代替フォントを選んだ場合、`kanji:fallback:1`や
 `hiragana:fallback:1`のようになる。
+
+## v8の互換性方針
+
+- `FontAdjustment`へ省略可能なpx単位フィールドを追加した。既存JSONは従来どおり%として読み込む。
+- `resolve`と`resolve_codepoint`へ省略可能な`base_font_size`を追加した。戻り値の個数は変更しない。
+- 垂直比率と水平比率は単位選択にかかわらず倍率のまま保持する。
 
 ## v7の互換性方針
 

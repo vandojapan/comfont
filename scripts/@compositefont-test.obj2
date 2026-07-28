@@ -29,7 +29,7 @@ obj.multiobject(#entries, function()
     local character = entry[1]
     local font, size_ratio, baseline_shift_em, tracking_adjust_em,
         vertical_scale_ratio, horizontal_scale_ratio, category, rule_id =
-        compositefont.resolve(character, "integration-test")
+        compositefont.resolve(character, "integration-test", 96)
 
     obj.setfont(
         font,

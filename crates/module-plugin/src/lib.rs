@@ -16,7 +16,7 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-const API_VERSION: i32 = 7;
+const API_VERSION: i32 = 8;
 #[cfg(any(debug_assertions, test))]
 const INTEGRATION_TEST_PROFILE: &str = "integration-test";
 
@@ -28,18 +28,22 @@ fn integration_test_profile() -> CompositeFontProfile {
         size_ratio: 1.0,
         baseline_shift_em: 0.0,
         tracking_adjust_em: 0.05,
-        vertical_scale_ratio: 1.1,
-        horizontal_scale_ratio: 0.9,
+        ..FontAdjustment::neutral()
     };
+    let mut western = western;
+    western.vertical_scale_ratio = 1.1;
+    western.horizontal_scale_ratio = 0.9;
     let japanese = FontAdjustment {
         font_family: "游明朝".to_owned(),
         fallback_font_families: Vec::new(),
         size_ratio: 1.0,
         baseline_shift_em: 0.0,
         tracking_adjust_em: 0.1,
-        vertical_scale_ratio: 0.9,
-        horizontal_scale_ratio: 1.1,
+        ..FontAdjustment::neutral()
     };
+    let mut japanese = japanese;
+    japanese.vertical_scale_ratio = 0.9;
+    japanese.horizontal_scale_ratio = 1.1;
     let mut kanji = japanese.clone();
     kanji.font_family = "Arial".to_owned();
     let mut adobe_kanji = japanese.clone();
@@ -150,6 +154,7 @@ impl ReloadableProfiles {
         &mut self,
         codepoint: char,
         profile_name: Option<&str>,
+        base_font_size: Option<f64>,
         coverage: &mut dyn GlyphCoverage,
     ) -> Result<ResolvedFont, compositefont_core::ResolveError> {
         self.refresh_if_changed();
@@ -157,10 +162,13 @@ impl ReloadableProfiles {
         let mut resolved = profile.resolve(codepoint);
         let (adjustment, candidate_index) =
             resolved_adjustment_with_index(profile, codepoint, coverage);
+        let metrics = adjustment
+            .effective_metrics(base_font_size)
+            .unwrap_or_default();
         resolved.font_family = adjustment.font_family;
-        resolved.size_ratio = adjustment.size_ratio;
-        resolved.baseline_shift_em = adjustment.baseline_shift_em;
-        resolved.tracking_adjust_em = adjustment.tracking_adjust_em;
+        resolved.size_ratio = metrics.size_ratio;
+        resolved.baseline_shift_em = metrics.baseline_shift_em;
+        resolved.tracking_adjust_em = metrics.tracking_adjust_em;
         resolved.vertical_scale_ratio = adjustment.vertical_scale_ratio;
         resolved.horizontal_scale_ratio = adjustment.horizontal_scale_ratio;
         if candidate_index > 0 {
@@ -435,14 +443,26 @@ impl TextRunBackend for ControlTagBackend {
 }
 
 fn is_safe_adjustment(adjustment: &FontAdjustment) -> bool {
+    let metric_values_are_safe = match adjustment.metric_unit {
+        compositefont_core::MetricUnit::Percent => {
+            adjustment.size_ratio.is_finite()
+                && adjustment.size_ratio > 0.0
+                && adjustment.baseline_shift_em.is_finite()
+                && adjustment.tracking_adjust_em.is_finite()
+        }
+        compositefont_core::MetricUnit::Pixels => {
+            adjustment
+                .size_px
+                .is_some_and(|value| value.is_finite() && value > 0.0)
+                && adjustment.baseline_shift_px.is_some_and(f64::is_finite)
+                && adjustment.tracking_adjust_px.is_some_and(f64::is_finite)
+        }
+    };
     !adjustment
         .font_family
         .chars()
         .any(|character| matches!(character, '<' | '>' | ',') || character.is_control())
-        && adjustment.size_ratio.is_finite()
-        && adjustment.size_ratio > 0.0
-        && adjustment.baseline_shift_em.is_finite()
-        && adjustment.tracking_adjust_em.is_finite()
+        && metric_values_are_safe
         && adjustment.vertical_scale_ratio.is_finite()
         && adjustment.vertical_scale_ratio > 0.0
         && adjustment.horizontal_scale_ratio.is_finite()
@@ -460,15 +480,18 @@ fn write_control_tag_run(
         output.push_str(run_text);
         return;
     };
+    let metrics = adjustment
+        .effective_metrics(base_format.font_size)
+        .unwrap_or_default();
     let has_font = !adjustment.font_family.is_empty();
-    let has_size = !approximately_equal(adjustment.size_ratio, 1.0);
+    let has_size = !approximately_equal(metrics.size_ratio, 1.0);
     let has_tracking = base_format.font_size.is_some()
         && base_format.char_spacing.is_some()
-        && !approximately_equal(adjustment.tracking_adjust_em, 0.0);
+        && !approximately_equal(metrics.tracking_adjust_em, 0.0);
     let has_horizontal = !approximately_equal(adjustment.horizontal_scale_ratio, 1.0);
     let has_vertical = !approximately_equal(adjustment.vertical_scale_ratio, 1.0);
     let has_baseline =
-        base_format.font_size.is_some() && !approximately_equal(adjustment.baseline_shift_em, 0.0);
+        base_format.font_size.is_some() && !approximately_equal(metrics.baseline_shift_em, 0.0);
 
     if has_font {
         output.push_str("<@");
@@ -477,14 +500,14 @@ fn write_control_tag_run(
     }
     if has_size {
         output.push_str("<s*");
-        output.push_str(&format_control_number(adjustment.size_ratio));
+        output.push_str(&format_control_number(metrics.size_ratio));
         output.push('>');
     }
     if has_tracking {
         output.push_str("<gw");
         output.push_str(&format_control_number(
             base_format.char_spacing.unwrap_or_default()
-                + base_format.font_size.unwrap_or_default() * adjustment.tracking_adjust_em,
+                + base_format.font_size.unwrap_or_default() * metrics.tracking_adjust_em,
         ));
         output.push('>');
     }
@@ -499,7 +522,7 @@ fn write_control_tag_run(
         output.push('>');
     }
     if has_baseline {
-        let shift = -base_format.font_size.unwrap_or_default() * adjustment.baseline_shift_em;
+        let shift = -base_format.font_size.unwrap_or_default() * metrics.baseline_shift_em;
         output.push_str("<p+0,");
         if shift >= 0.0 {
             output.push('+');
@@ -620,6 +643,7 @@ impl CompositeFontModule {
         &self,
         character: String,
         profile: Option<String>,
+        base_font_size: Option<f64>,
         section: &aviutl2::generic::ReadSection,
     ) -> aviutl2::AnyResult<ScriptResolvedFont> {
         let codepoint = single_codepoint(&character)?;
@@ -629,7 +653,7 @@ impl CompositeFontModule {
             .lock()
             .map_err(|_| anyhow::anyhow!("composite font profile lock was poisoned"))?;
         Ok(profiles
-            .resolve(codepoint, profile.as_deref(), &mut coverage)?
+            .resolve(codepoint, profile.as_deref(), base_font_size, &mut coverage)?
             .into())
     }
 
@@ -637,6 +661,7 @@ impl CompositeFontModule {
         &self,
         codepoint: u32,
         profile: Option<String>,
+        base_font_size: Option<f64>,
         section: &aviutl2::generic::ReadSection,
     ) -> aviutl2::AnyResult<ScriptResolvedFont> {
         let codepoint = codepoint_to_char(codepoint)?;
@@ -646,7 +671,7 @@ impl CompositeFontModule {
             .lock()
             .map_err(|_| anyhow::anyhow!("composite font profile lock was poisoned"))?;
         Ok(profiles
-            .resolve(codepoint, profile.as_deref(), &mut coverage)?
+            .resolve(codepoint, profile.as_deref(), base_font_size, &mut coverage)?
             .into())
     }
 
@@ -709,6 +734,7 @@ mod tests {
             tracking_adjust_em,
             vertical_scale_ratio,
             horizontal_scale_ratio,
+            ..FontAdjustment::neutral()
         }
     }
 
@@ -919,6 +945,24 @@ mod tests {
                 "<p><th><tw><gw><s><@>",
                 "<@Japanese>国<@>"
             )
+        );
+    }
+
+    #[test]
+    fn decorates_pixel_metrics_as_absolute_values() {
+        let mut profile = CompositeFontProfile::neutral_default();
+        profile.western = FontAdjustment {
+            font_family: "Pixel Font".to_owned(),
+            metric_unit: compositefont_core::MetricUnit::Pixels,
+            size_px: Some(48.0),
+            baseline_shift_px: Some(3.0),
+            tracking_adjust_px: Some(-2.0),
+            ..FontAdjustment::neutral()
+        };
+
+        assert_eq!(
+            decorate_plain_text("A", &profile, Some(64.0), Some(3.0)),
+            "<@Pixel Font><s*0.75><gw1><p+0,-3>A<p><gw><s><@>"
         );
     }
 
