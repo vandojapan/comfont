@@ -52,15 +52,15 @@ use windows::{
                 GWL_STYLE, GetMessageW, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW,
                 GetWindowTextW, HICON, HMENU, IDC_ARROW, IMAGE_ICON, IsDialogMessageW, IsWindow,
                 LB_GETTOPINDEX, LB_SETTOPINDEX, LR_DEFAULTCOLOR, LoadCursorW, MB_ICONERROR,
-                MB_ICONINFORMATION, MB_OK, MSG, MessageBoxW, RegisterClassW, SB_VERT, SW_HIDE,
-                SW_SHOW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-                SendMessageW, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, SetWindowTextW,
-                ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND,
-                WM_CREATE, WM_CTLCOLORBTN, WM_CTLCOLOREDIT, WM_CTLCOLORLISTBOX, WM_CTLCOLORSTATIC,
-                WM_GETFONT, WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY, WM_NOTIFY, WM_PAINT,
-                WM_SETFONT, WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN,
-                WS_EX_CONTROLPARENT, WS_EX_DLGMODALFRAME, WS_GROUP, WS_OVERLAPPED, WS_SYSMENU,
-                WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+                MB_ICONINFORMATION, MB_OK, MSG, MessageBoxW, PostQuitMessage, RegisterClassW,
+                SB_VERT, SW_HIDE, SW_SHOW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
+                SWP_NOSIZE, SWP_NOZORDER, SendMessageW, SetForegroundWindow, SetWindowLongPtrW,
+                SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage, WINDOW_EX_STYLE,
+                WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_CTLCOLORBTN, WM_CTLCOLOREDIT,
+                WM_CTLCOLORLISTBOX, WM_CTLCOLORSTATIC, WM_GETFONT, WM_MOUSEWHEEL, WM_NCCREATE,
+                WM_NCDESTROY, WM_NOTIFY, WM_PAINT, WM_SETFONT, WNDCLASSW, WS_BORDER, WS_CAPTION,
+                WS_CHILD, WS_CLIPCHILDREN, WS_EX_CONTROLPARENT, WS_EX_DLGMODALFRAME, WS_GROUP,
+                WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
             },
         },
     },
@@ -330,9 +330,19 @@ pub fn show_editor(
         let _ = SetForegroundWindow(window);
 
         let mut message = MSG::default();
+        let mut quit_code = None;
+        let mut message_error = None;
         while IsWindow(Some(window)).as_bool() {
             let status = GetMessageW(&mut message, None, 0, 0).0;
-            if status <= 0 {
+            if status == 0 {
+                quit_code = Some(message.wParam.0 as i32);
+                break;
+            }
+            if status < 0 {
+                message_error = Some(format!(
+                    "合成フォント画面のメッセージを取得できません: {}",
+                    std::io::Error::last_os_error()
+                ));
                 break;
             }
             if message.message == WM_MOUSEWHEEL
@@ -351,8 +361,19 @@ pub fn show_editor(
             }
         }
 
+        if IsWindow(Some(window)).as_bool() {
+            let _ = DestroyWindow(window);
+        }
         let _ = EnableWindow(owner, true);
         let _ = SetForegroundWindow(owner);
+        if let Some(code) = quit_code {
+            // A nested modal loop must not consume the host application's
+            // WM_QUIT. Repost it for AviUtl2's outer message loop.
+            PostQuitMessage(code);
+        }
+        if let Some(error) = message_error {
+            return Err(error);
+        }
     }
 
     Ok(context.persisted_document)
@@ -1312,7 +1333,7 @@ unsafe fn handle_command(window: HWND, context: &mut DialogContext, id: usize, n
                 MessageBoxW(
                     Some(window),
                     PCWSTR(message.as_ptr()),
-                    w!("プロファイルの保存"),
+                    w!("保存"),
                     MB_OK | MB_ICONINFORMATION,
                 );
                 refresh_all(context);
@@ -1379,23 +1400,19 @@ unsafe fn handle_command(window: HWND, context: &mut DialogContext, id: usize, n
 }
 
 fn save_confirmation_message(outcome: &FontStageOutcome) -> String {
-    let font_status = if outcome.source_file_count == 0 {
-        String::new()
+    if outcome.source_file_count == 0 {
+        "保存しました。".to_owned()
     } else if outcome.added_file_count == 0 {
         format!(
-            "\n追加フォント{}件は次回起動用フォルダーに配置済みです。",
+            "保存しました。\n追加フォント{}件は配置済みです。",
             outcome.existing_file_count
         )
     } else {
         format!(
-            "\n追加フォント{}件を次回起動用フォルダーに配置しました。使用するにはAviUtl2を再起動してください。",
+            "保存しました。\n追加フォント{}件を配置しました。\n反映にはAviUtl2の再起動が必要です。",
             outcome.added_file_count
         )
-    };
-
-    format!(
-        "プロファイルを保存しました。{font_status}\n\nこのビルドはFontManagerへ合成プロファイルを追加登録しません。\nプロファイル名は標準のフォント一覧には表示されません。\n「合成フォントテキスト」「合成フォント字幕」またはcompositefont.decorate(...)から使用してください。"
-    )
+    }
 }
 
 unsafe fn commit_and_save(context: &mut DialogContext) -> Result<(), String> {
@@ -1991,7 +2008,7 @@ unsafe fn paint_preview(window: HWND, context: &DialogContext) {
         let profile = context.model.selected_profile();
         let mut glyph_cache = context.preview_glyph_cache.borrow_mut();
         let mut x = 15;
-        let mut y = 25;
+        let mut baseline = PREVIEW_FONT_HEIGHT.round() as i32 + 14;
         let preview_runs = match context.preview_mode {
             PreviewMode::Category => CATEGORY_ROWS
                 .iter()
@@ -2040,14 +2057,19 @@ unsafe fn paint_preview(window: HWND, context: &DialogContext) {
             let rendered_width = (run_width as f64 * horizontal_scale).round() as i32;
             if x + rendered_width > PREVIEW_WIDTH - 20 {
                 x = 15;
-                y += PREVIEW_LINE_HEIGHT;
+                baseline += PREVIEW_LINE_HEIGHT;
             }
             let baseline_shift = (metrics.baseline_shift_em * PREVIEW_FONT_HEIGHT).round() as i32;
-            let draw_y = y - baseline_shift;
-            let mut metrics = TEXTMETRICW::default();
-            let _ = unsafe { GetTextMetricsW(dc, &mut metrics) };
-            let baseline_y = draw_y + metrics.tmAscent;
-            let transform = scale_about(x, draw_y, horizontal_scale as f32, vertical_scale as f32);
+            let mut text_metrics = TEXTMETRICW::default();
+            let _ = unsafe { GetTextMetricsW(dc, &mut text_metrics) };
+            let (draw_y, baseline_y) =
+                preview_vertical_positions(baseline, text_metrics.tmAscent, baseline_shift);
+            let transform = scale_about(
+                x,
+                baseline_y,
+                horizontal_scale as f32,
+                vertical_scale as f32,
+            );
             unsafe {
                 let _ = SetWorldTransform(dc, &transform);
                 draw_preview_run(
@@ -2090,6 +2112,15 @@ unsafe fn paint_preview(window: HWND, context: &DialogContext) {
         }
     }
     let _ = unsafe { EndPaint(window, &paint) };
+}
+
+fn preview_vertical_positions(
+    nominal_baseline: i32,
+    font_ascent: i32,
+    baseline_shift: i32,
+) -> (i32, i32) {
+    let baseline_y = nominal_baseline - baseline_shift;
+    (baseline_y - font_ascent, baseline_y)
 }
 
 fn preview_run_gap(mode: PreviewMode, tracking: i32, horizontal_scale: f64) -> i32 {
@@ -2305,8 +2336,8 @@ fn wide(value: &str) -> Vec<u16> {
 mod tests {
     use super::{
         PreviewMode, normalize_font_names, numeric_wheel_value, preview_run_gap,
-        save_confirmation_message, scale_about, select_table_row, tracked_run_width,
-        wheel_target_top,
+        preview_vertical_positions, save_confirmation_message, scale_about, select_table_row,
+        tracked_run_width, wheel_target_top,
     };
     use crate::{font_collection::FontStageOutcome, model::EditorModel};
     use compositefont_core::ProfileDocument;
@@ -2344,13 +2375,27 @@ mod tests {
     }
 
     #[test]
-    fn save_message_explains_that_profiles_are_not_registered_as_fonts() {
-        let message = save_confirmation_message(&FontStageOutcome::default());
-
-        assert!(message.contains("FontManagerへ合成プロファイルを追加登録しません"));
-        assert!(message.contains("標準のフォント一覧には表示されません"));
-        assert!(message.contains("compositefont.decorate(...)"));
-        assert!(!message.contains("監視先"));
+    fn save_message_is_concise_and_reports_font_staging() {
+        assert_eq!(
+            save_confirmation_message(&FontStageOutcome::default()),
+            "保存しました。"
+        );
+        assert_eq!(
+            save_confirmation_message(&FontStageOutcome {
+                source_file_count: 2,
+                added_file_count: 0,
+                existing_file_count: 2,
+            }),
+            "保存しました。\n追加フォント2件は配置済みです。"
+        );
+        assert_eq!(
+            save_confirmation_message(&FontStageOutcome {
+                source_file_count: 2,
+                added_file_count: 1,
+                existing_file_count: 1,
+            }),
+            "保存しました。\n追加フォント1件を配置しました。\n反映にはAviUtl2の再起動が必要です。"
+        );
     }
 
     #[test]
@@ -2374,6 +2419,23 @@ mod tests {
         assert_eq!(transform.eM22, 0.8);
         assert_eq!(20.0 * transform.eM11 + transform.eDx, 20.0);
         assert_eq!(30.0 * transform.eM22 + transform.eDy, 30.0);
+    }
+
+    #[test]
+    fn preview_fonts_share_a_baseline_regardless_of_their_ascent() {
+        let (first_top, first_baseline) = preview_vertical_positions(48, 30, 0);
+        let (second_top, second_baseline) = preview_vertical_positions(48, 38, 0);
+
+        assert_eq!(first_top, 18);
+        assert_eq!(second_top, 10);
+        assert_eq!(first_baseline, 48);
+        assert_eq!(second_baseline, 48);
+    }
+
+    #[test]
+    fn preview_baseline_adjustment_moves_the_run_from_the_shared_baseline() {
+        assert_eq!(preview_vertical_positions(48, 30, 4), (14, 44));
+        assert_eq!(preview_vertical_positions(48, 30, -4), (22, 52));
     }
 
     #[test]

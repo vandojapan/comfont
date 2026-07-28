@@ -21,6 +21,32 @@ if obj.frame == 0 and compositefont.api_version() >= 4 then
         0
     )
     print("@info", "[compositefont-decorate-test] " .. decorated)
+
+    if compositefont.api_version() >= 9 then
+        local source = "2026年7月29日、てんきは晴れ"
+        local clipping_text, offset_y = compositefont.decorate_layout(
+            source,
+            "clipping-test",
+            40,
+            0,
+            "Yu Gothic UI"
+        )
+        local passed = math.abs(offset_y) < 0.001
+            and string.find(clipping_text, "<p", 1, true) == nil
+            and string.find(clipping_text, "<s*", 1, true) ~= nil
+            and string.find(clipping_text, "<gw", 1, true) ~= nil
+            and string.find(clipping_text, "<tw", 1, true) ~= nil
+            and string.find(clipping_text, "<th", 1, true) ~= nil
+        local level = passed and "@info" or "@error"
+        print(
+            level,
+            string.format(
+                "[compositefont-clipping-test] offset_y=%.3f text=%s",
+                offset_y,
+                clipping_text
+            )
+        )
+    end
 end
 
 local ox = 0
@@ -75,3 +101,59 @@ obj.multiobject(#entries, function()
     end
 end)
 obj.ox = -ox / 2
+
+@CompositeFont Clipping Verification
+
+local function measure_layer(layer)
+    if not obj.load("layer", layer, true) then
+        return nil
+    end
+    local data, image_w, image_h = obj.getpixeldata("object", "rgba")
+    if not data then
+        return nil
+    end
+    local pixels = require("ffi").cast("uint8_t*", data)
+    local top = image_h
+    local bottom = -1
+    local top_edge_pixels = 0
+    for y = 0, image_h - 1 do
+        for x = 0, image_w - 1 do
+            if pixels[(y * image_w + x) * 4 + 3] > 0 then
+                if y < top then top = y end
+                if y > bottom then bottom = y end
+                if y == 0 then top_edge_pixels = top_edge_pixels + 1 end
+            end
+        end
+    end
+    return image_w, image_h, top, bottom, top_edge_pixels
+end
+
+if obj.frame == 0 then
+    local raw_w, raw_h, raw_top, raw_bottom, raw_top_edge = measure_layer(1)
+    local fixed_w, fixed_h, fixed_top, fixed_bottom, fixed_top_edge = measure_layer(3)
+    local raw_bottom_from_center = raw_bottom and raw_h
+        and raw_bottom - (raw_h - 1) / 2
+    local fixed_bottom_from_center = fixed_bottom and fixed_h
+        and fixed_bottom - (fixed_h - 1) / 2
+    local passed = raw_w ~= nil and fixed_w ~= nil
+        and raw_w == fixed_w
+        and raw_top_edge > 0 and fixed_top_edge == 0
+        and math.abs(raw_bottom_from_center - fixed_bottom_from_center) <= 1
+    local level = passed and "@info" or "@error"
+    print(
+        level,
+        string.format(
+            "[compositefont-layer-clipping-test] raw=%dx%d top=%d bottom=%d top-edge=%d fixed=%dx%d top=%d bottom=%d top-edge=%d",
+            raw_w or -1,
+            raw_h or -1,
+            raw_top or -1,
+            raw_bottom or -1,
+            raw_top_edge or -1,
+            fixed_w or -1,
+            fixed_h or -1,
+            fixed_top or -1,
+            fixed_bottom or -1,
+            fixed_top_edge or -1
+        )
+    )
+end

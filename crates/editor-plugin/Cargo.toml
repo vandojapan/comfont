@@ -11,5 +11,6 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 aviutl2.workspace = true
 compositefont-core.workspace = true
+compositefont-module-plugin.workspace = true
 serde_json.workspace = true
 windows.workspace = true

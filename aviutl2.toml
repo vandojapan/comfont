@@ -9,7 +9,7 @@ version = "0.1.0"
 aviutl2_version = "latest"
 
 [artifacts.compositefont-editor-aux2]
-destination = "Plugin/compositefont.aux2"
+destination = "Plugin/comfont.aux2"
 placement_method = "copy"
 
 [artifacts.compositefont-editor-aux2.profiles.debug]
@@ -19,18 +19,6 @@ source = "target/debug/compositefont_editor.dll"
 [artifacts.compositefont-editor-aux2.profiles.release]
 build = "cargo build -p compositefont-editor-plugin --release"
 source = "target/release/compositefont_editor.dll"
-
-[artifacts.compositefont-mod2]
-destination = "Script/compositefont.mod2"
-placement_method = "copy"
-
-[artifacts.compositefont-mod2.profiles.debug]
-build = "cargo build -p compositefont-module-plugin"
-source = "target/debug/compositefont.dll"
-
-[artifacts.compositefont-mod2.profiles.release]
-build = "cargo build -p compositefont-module-plugin --release"
-source = "target/release/compositefont.dll"
 
 [artifacts.compositefont-test-script]
 destination = "Script/@compositefont-test.obj2"

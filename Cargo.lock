@@ -112,6 +112,7 @@ version = "0.1.0"
 dependencies = [
  "aviutl2",
  "compositefont-core",
+ "compositefont-module-plugin",
  "serde_json",
  "windows",
 ]
