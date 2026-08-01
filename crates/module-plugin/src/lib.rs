@@ -1,3 +1,4 @@
+mod control_text;
 mod font_coverage;
 
 use aviutl2::module::{IntoScriptModuleReturnValue, ScriptModule, ScriptModuleFunctions};
@@ -5,6 +6,9 @@ use compositefont_core::{
     CompositeFontProfile, DEFAULT_PROFILE_NAME, FontAdjustment, PROFILE_SCHEMA_VERSION,
     ProfileDocument, ProfileStore, ResolvedFont, classify_character, codepoint_to_char,
     single_codepoint,
+};
+use control_text::{
+    ControlTextDefaults, ParsedControlText, ParsedSpanKind, TextFormatState, parse_control_text,
 };
 use font_coverage::{FontManagerGlyphCoverage, GlyphCoverage};
 #[cfg(test)]
@@ -16,7 +20,7 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-const API_VERSION: i32 = 9;
+const API_VERSION: i32 = 10;
 // AviUtl2 rasterizes text size at twice the value reported by obj.getfont(),
 // while gw and the resulting object bounds use pixel units.
 const TEXT_RASTER_SIZE_SCALE: f64 = 2.0;
@@ -291,6 +295,7 @@ struct TextRunRange {
 struct ResolvedTextRun {
     range: TextRunRange,
     adjustment: Option<FontAdjustment>,
+    input_format: TextFormatState,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -360,17 +365,24 @@ fn decorate_plain_text_with_coverage(
     base_char_spacing: Option<f64>,
     coverage: &mut dyn GlyphCoverage,
 ) -> String {
-    // PSDToolKit2のmodifierで字幕を壊さないことを優先する初期実装。
-    // 制御文字、ルビ、コメント、スクリプト、未知タグを区別せずfail-openする。
-    if text.contains('<') || text.is_empty() {
+    if text.is_empty() {
         return text.to_owned();
     }
 
-    let runs = resolve_text_runs(text, profile, coverage);
     let base_format = BaseTextFormat {
         font_size: base_font_size.filter(|value| value.is_finite() && *value > 0.0),
         char_spacing: base_char_spacing.filter(|value| value.is_finite()),
     };
+    let Ok(parsed) = parse_control_text(
+        text,
+        ControlTextDefaults {
+            font_size: base_format.font_size,
+            font_family: None,
+        },
+    ) else {
+        return text.to_owned();
+    };
+    let runs = resolve_parsed_text_runs(text, &parsed, profile, coverage);
     ControlTagBackend
         .apply(text, &runs, base_format, &[])
         .unwrap_or_else(|| text.to_owned())
@@ -384,21 +396,29 @@ fn decorate_plain_text_layout_with_coverage(
     base_font_family: Option<&str>,
     coverage: &mut dyn GlyphCoverage,
 ) -> DecoratedTextLayout {
-    // Existing control text is opaque to this backend, so both decoration and
-    // the corresponding object-coordinate correction must fail open together.
-    if text.contains('<') || text.is_empty() {
+    if text.is_empty() {
         return DecoratedTextLayout::unchanged(text);
     }
 
-    let runs = resolve_text_runs(text, profile, coverage);
     let font_size = base_font_size.filter(|value| value.is_finite() && *value > 0.0);
     let char_spacing = base_char_spacing.filter(|value| value.is_finite());
+    let base_font_family = base_font_family.filter(|family| !family.is_empty());
+    let Ok(parsed) = parse_control_text(
+        text,
+        ControlTextDefaults {
+            font_size,
+            font_family: base_font_family.map(str::to_owned),
+        },
+    ) else {
+        return DecoratedTextLayout::unchanged(text);
+    };
+    let runs = resolve_parsed_text_runs(text, &parsed, profile, coverage);
     let layout_overrides = layout_glyph_overrides(
         text,
         &runs,
         font_size,
         char_spacing,
-        base_font_family.filter(|family| !family.is_empty()),
+        base_font_family,
         coverage,
     );
     let base_format = BaseTextFormat {
@@ -414,75 +434,109 @@ fn decorate_plain_text_layout_with_coverage(
     }
 }
 
+#[cfg(test)]
 fn resolve_text_runs(
     text: &str,
     profile: &CompositeFontProfile,
     coverage: &mut dyn GlyphCoverage,
 ) -> Vec<ResolvedTextRun> {
-    let mut runs = Vec::new();
-    let mut current_utf8_start = 0;
-    let mut current_utf16_start = 0;
-    let mut utf16_index = 0;
-    let mut current_adjustment: Option<FontAdjustment> = None;
+    let parsed = parse_control_text(text, ControlTextDefaults::default())
+        .expect("plain text must be valid control text");
+    resolve_parsed_text_runs(text, &parsed, profile, coverage)
+}
 
-    for (index, character) in text.char_indices() {
-        let utf16_end = utf16_index + character.len_utf16();
-        if matches!(character, '\r' | '\n') {
-            if let Some(adjustment) = current_adjustment.take() {
-                runs.push(ResolvedTextRun {
-                    range: TextRunRange {
-                        utf8: current_utf8_start..index,
-                        utf16: current_utf16_start..utf16_index,
-                    },
-                    adjustment: Some(adjustment),
-                });
-            }
-            let end = index + character.len_utf8();
+fn resolve_parsed_text_runs(
+    text: &str,
+    parsed: &ParsedControlText,
+    profile: &CompositeFontProfile,
+    coverage: &mut dyn GlyphCoverage,
+) -> Vec<ResolvedTextRun> {
+    let mut runs = Vec::new();
+    let mut source_utf8_cursor = 0;
+    let mut source_utf16_cursor = 0;
+    for span in &parsed.spans {
+        source_utf16_cursor += text[source_utf8_cursor..span.range.start]
+            .encode_utf16()
+            .count();
+        let span_utf16_start = source_utf16_cursor;
+        let span_utf16_end = span_utf16_start + text[span.range.clone()].encode_utf16().count();
+        if span.kind == ParsedSpanKind::Newline {
             runs.push(ResolvedTextRun {
                 range: TextRunRange {
-                    utf8: index..end,
-                    utf16: utf16_index..utf16_end,
+                    utf8: span.range.clone(),
+                    utf16: span_utf16_start..span_utf16_end,
                 },
                 adjustment: None,
+                input_format: span.format.clone(),
             });
-            current_utf8_start = end;
-            current_utf16_start = utf16_end;
-            utf16_index = utf16_end;
+            source_utf8_cursor = span.range.end;
+            source_utf16_cursor = span_utf16_end;
             continue;
         }
 
-        let adjustment = resolved_adjustment(profile, character, coverage);
-
-        match current_adjustment {
-            Some(ref current) if current != &adjustment => {
-                runs.push(ResolvedTextRun {
-                    range: TextRunRange {
-                        utf8: current_utf8_start..index,
-                        utf16: current_utf16_start..utf16_index,
-                    },
-                    adjustment: current_adjustment.take(),
-                });
-                current_utf8_start = index;
-                current_utf16_start = utf16_index;
-                current_adjustment = Some(adjustment);
+        let mut current_utf8_start = span.range.start;
+        let mut current_utf16_start = span_utf16_start;
+        let mut utf16_index = span_utf16_start;
+        let mut current_adjustment: Option<FontAdjustment> = None;
+        for (relative_index, character) in text[span.range.clone()].char_indices() {
+            let index = span.range.start + relative_index;
+            let utf16_end = utf16_index + character.len_utf16();
+            let adjustment =
+                resolved_adjustment_for_format(profile, character, &span.format, coverage);
+            match current_adjustment {
+                Some(ref current) if current != &adjustment => {
+                    runs.push(ResolvedTextRun {
+                        range: TextRunRange {
+                            utf8: current_utf8_start..index,
+                            utf16: current_utf16_start..utf16_index,
+                        },
+                        adjustment: current_adjustment.take(),
+                        input_format: span.format.clone(),
+                    });
+                    current_utf8_start = index;
+                    current_utf16_start = utf16_index;
+                    current_adjustment = Some(adjustment);
+                }
+                None => current_adjustment = Some(adjustment),
+                Some(_) => {}
             }
-            None => current_adjustment = Some(adjustment),
-            Some(_) => {}
+            utf16_index = utf16_end;
         }
-        utf16_index = utf16_end;
-    }
-
-    if let Some(adjustment) = current_adjustment {
-        runs.push(ResolvedTextRun {
-            range: TextRunRange {
-                utf8: current_utf8_start..text.len(),
-                utf16: current_utf16_start..utf16_index,
-            },
-            adjustment: Some(adjustment),
-        });
+        if let Some(adjustment) = current_adjustment {
+            runs.push(ResolvedTextRun {
+                range: TextRunRange {
+                    utf8: current_utf8_start..span.range.end,
+                    utf16: current_utf16_start..utf16_index,
+                },
+                adjustment: Some(adjustment),
+                input_format: span.format.clone(),
+            });
+        }
+        source_utf8_cursor = span.range.end;
+        source_utf16_cursor = span_utf16_end;
     }
 
     runs
+}
+
+fn resolved_adjustment_for_format(
+    profile: &CompositeFontProfile,
+    character: char,
+    format: &TextFormatState,
+    coverage: &mut dyn GlyphCoverage,
+) -> FontAdjustment {
+    if format.profile_font_allowed() {
+        resolved_adjustment(profile, character, coverage)
+    } else {
+        let mut adjustment = profile
+            .adjustment_for(classify_character(character))
+            .clone();
+        if adjustment.font_family.is_empty() {
+            return FontAdjustment::neutral();
+        }
+        adjustment.fallback_font_families.clear();
+        adjustment
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -490,6 +544,7 @@ struct LineLayoutCharacter<'run> {
     utf8: Range<usize>,
     character: char,
     adjustment: &'run FontAdjustment,
+    input_format: &'run TextFormatState,
 }
 
 fn layout_glyph_overrides(
@@ -504,8 +559,7 @@ fn layout_glyph_overrides(
     else {
         return Vec::new();
     };
-    let raster_font_size = base_font_size * TEXT_RASTER_SIZE_SCALE;
-    if !raster_font_size.is_finite() {
+    if !(base_font_size * TEXT_RASTER_SIZE_SCALE).is_finite() {
         return Vec::new();
     }
 
@@ -517,7 +571,6 @@ fn layout_glyph_overrides(
             append_line_layout_overrides(
                 &line,
                 base_font_size,
-                raster_font_size,
                 base_char_spacing,
                 base_font_family,
                 coverage,
@@ -535,13 +588,13 @@ fn layout_glyph_overrides(
                 utf8: start..start + character.len_utf8(),
                 character,
                 adjustment,
+                input_format: &run.input_format,
             });
         }
     }
     append_line_layout_overrides(
         &line,
         base_font_size,
-        raster_font_size,
         base_char_spacing,
         base_font_family,
         coverage,
@@ -554,7 +607,6 @@ fn layout_glyph_overrides(
 fn append_line_layout_overrides(
     line: &[LineLayoutCharacter<'_>],
     base_font_size: f64,
-    raster_font_size: f64,
     base_char_spacing: f64,
     base_font_family: Option<&str>,
     coverage: &mut dyn GlyphCoverage,
@@ -563,13 +615,9 @@ fn append_line_layout_overrides(
     let (Some(first), Some(second)) = (line.first(), line.get(1)) else {
         return;
     };
-    let Some(line_top_capacity) = run_line_top_capacity(
-        first.adjustment,
-        base_font_size,
-        raster_font_size,
-        base_font_family,
-        coverage,
-    ) else {
+    let Some(line_top_capacity) =
+        run_line_top_capacity(first, base_font_size, base_font_family, coverage)
+    else {
         return;
     };
     if line_top_capacity <= 0.0 {
@@ -579,16 +627,7 @@ fn append_line_layout_overrides(
     let maximum_top_extent = line
         .iter()
         .filter(|item| is_visible_layout_character(item.character))
-        .filter_map(|item| {
-            glyph_top_extent(
-                item.character,
-                item.adjustment,
-                base_font_size,
-                raster_font_size,
-                base_font_family,
-                coverage,
-            )
-        })
+        .filter_map(|item| glyph_top_extent(item, base_font_size, base_font_family, coverage))
         .fold(0.0_f64, f64::max);
     let overflow = maximum_top_extent - line_top_capacity;
     if !overflow.is_finite() || overflow <= 0.0 {
@@ -604,7 +643,7 @@ fn append_line_layout_overrides(
         return;
     }
 
-    let Some(first_font_family) = adjustment_font_family(first.adjustment, base_font_family) else {
+    let Some(first_font_family) = layout_font_family(first, base_font_family) else {
         return;
     };
     // Fragmenting a proportional run can change kerning, ligatures, or script
@@ -616,8 +655,7 @@ fn append_line_layout_overrides(
     else {
         return;
     };
-    let Some(second_font_family) = adjustment_font_family(second.adjustment, base_font_family)
-    else {
+    let Some(second_font_family) = layout_font_family(second, base_font_family) else {
         return;
     };
     let Some(second_advance_em) = coverage.glyph_advance_em(second_font_family, second.character)
@@ -627,16 +665,38 @@ fn append_line_layout_overrides(
     if first_advance_em <= 0.0 || second_advance_em <= 0.0 {
         return;
     }
-    let Some(first_metrics) = first.adjustment.effective_metrics(Some(base_font_size)) else {
+    let Some(first_font_size) = first
+        .input_format
+        .effective_font_size()
+        .or(Some(base_font_size))
+    else {
         return;
     };
-    let Some(second_metrics) = second.adjustment.effective_metrics(Some(base_font_size)) else {
+    let Some(first_metrics) = first.adjustment.effective_metrics(Some(first_font_size)) else {
         return;
     };
-    let extra_advance =
-        first_advance_em * raster_font_size * first_metrics.size_ratio * (size_factor - 1.0);
+    let Some(second_font_size) = second
+        .input_format
+        .effective_font_size()
+        .or(Some(base_font_size))
+    else {
+        return;
+    };
+    let Some(second_metrics) = second.adjustment.effective_metrics(Some(second_font_size)) else {
+        return;
+    };
+    let first_size_ratio = if first.input_format.profile_size_allowed() {
+        first_metrics.size_ratio
+    } else {
+        1.0
+    };
+    let extra_advance = first_advance_em
+        * first_font_size
+        * TEXT_RASTER_SIZE_SCALE
+        * first_size_ratio
+        * (size_factor - 1.0);
     let tracking_px =
-        base_char_spacing + base_font_size * second_metrics.tracking_adjust_em - extra_advance;
+        base_char_spacing + second_font_size * second_metrics.tracking_adjust_em - extra_advance;
     if !extra_advance.is_finite() || !tracking_px.is_finite() {
         return;
     }
@@ -657,54 +717,68 @@ fn append_line_layout_overrides(
 }
 
 fn run_line_top_capacity(
-    adjustment: &FontAdjustment,
+    item: &LineLayoutCharacter<'_>,
     base_font_size: f64,
-    raster_font_size: f64,
     base_font_family: Option<&str>,
     coverage: &mut dyn GlyphCoverage,
 ) -> Option<f64> {
-    let font_family = if adjustment.font_family.is_empty() {
-        base_font_family?
-    } else {
-        &adjustment.font_family
-    };
+    let font_family = layout_font_family(item, base_font_family)?;
+    let font_size = item
+        .input_format
+        .effective_font_size()
+        .unwrap_or(base_font_size);
     let font_metrics = coverage.vertical_metrics(font_family)?;
-    let metrics = adjustment.effective_metrics(Some(base_font_size))?;
+    let metrics = item.adjustment.effective_metrics(Some(font_size))?;
+    let size_ratio = if item.input_format.profile_size_allowed() {
+        metrics.size_ratio
+    } else {
+        1.0
+    };
     // AviUtl2 derives the line box from the selected font size. tw/th and p
     // alter glyph rendering, but do not add pre-rasterization line padding.
-    let top_extent = font_metrics.ascent_em * raster_font_size * metrics.size_ratio;
+    let top_extent = font_metrics.ascent_em * font_size * TEXT_RASTER_SIZE_SCALE * size_ratio;
     top_extent.is_finite().then_some(top_extent)
 }
 
 fn glyph_top_extent(
-    character: char,
-    adjustment: &FontAdjustment,
+    item: &LineLayoutCharacter<'_>,
     base_font_size: f64,
-    raster_font_size: f64,
     base_font_family: Option<&str>,
     coverage: &mut dyn GlyphCoverage,
 ) -> Option<f64> {
-    let font_family = if adjustment.font_family.is_empty() {
-        base_font_family?
+    let font_family = layout_font_family(item, base_font_family)?;
+    let font_size = item
+        .input_format
+        .effective_font_size()
+        .unwrap_or(base_font_size);
+    let metrics = item.adjustment.effective_metrics(Some(font_size))?;
+    let size_ratio = if item.input_format.profile_size_allowed() {
+        metrics.size_ratio
     } else {
-        &adjustment.font_family
+        1.0
     };
-    let metrics = adjustment.effective_metrics(Some(base_font_size))?;
-    let glyph_top_em = coverage.glyph_top_em(font_family, character)?;
-    let scaled_top =
-        glyph_top_em * raster_font_size * metrics.size_ratio * adjustment.vertical_scale_ratio;
-    let top_extent = scaled_top + base_font_size * metrics.baseline_shift_em;
+    let glyph_top_em = coverage.glyph_top_em(font_family, item.character)?;
+    let scaled_top = glyph_top_em
+        * font_size
+        * TEXT_RASTER_SIZE_SCALE
+        * size_ratio
+        * item.adjustment.vertical_scale_ratio;
+    let top_extent = scaled_top + font_size * metrics.baseline_shift_em;
     top_extent.is_finite().then_some(top_extent)
 }
 
-fn adjustment_font_family<'a>(
-    adjustment: &'a FontAdjustment,
+fn layout_font_family<'a>(
+    item: &'a LineLayoutCharacter<'_>,
     base_font_family: Option<&'a str>,
 ) -> Option<&'a str> {
-    if adjustment.font_family.is_empty() {
+    if !item.input_format.profile_font_allowed() {
+        item.input_format
+            .effective_font_family()
+            .or(base_font_family)
+    } else if item.adjustment.font_family.is_empty() {
         base_font_family
     } else {
-        Some(&adjustment.font_family)
+        Some(&item.adjustment.font_family)
     }
 }
 
@@ -801,15 +875,54 @@ impl TextRunBackend for ControlTagBackend {
             }
             previous_end = item.utf8.end;
         }
+        for run in runs {
+            let Some(adjustment) = run.adjustment.as_ref() else {
+                continue;
+            };
+            if !control_tag_fragment_values_are_safe(
+                adjustment,
+                &run.input_format,
+                base_format,
+                None,
+            ) || layout_overrides
+                .iter()
+                .filter(|item| {
+                    item.utf8.start >= run.range.utf8.start && item.utf8.end <= run.range.utf8.end
+                })
+                .any(|item| {
+                    !control_tag_fragment_values_are_safe(
+                        adjustment,
+                        &run.input_format,
+                        base_format,
+                        Some(item),
+                    )
+                })
+            {
+                return None;
+            }
+        }
 
         let mut decorated = String::with_capacity(source.len() + runs.len() * 48);
+        let mut source_cursor = 0;
         for run in runs {
+            if run.range.utf8.start < source_cursor
+                || run.range.utf8.start > run.range.utf8.end
+                || run.range.utf8.end > source.len()
+                || !source.is_char_boundary(run.range.utf8.start)
+                || !source.is_char_boundary(run.range.utf8.end)
+            {
+                return None;
+            }
+            decorated.push_str(&source[source_cursor..run.range.utf8.start]);
             if run.adjustment.is_none() {
                 decorated.push_str(&source[run.range.utf8.clone()]);
+                source_cursor = run.range.utf8.end;
                 continue;
             }
             write_control_tag_run(&mut decorated, source, run, base_format, layout_overrides);
+            source_cursor = run.range.utf8.end;
         }
+        decorated.push_str(&source[source_cursor..]);
         Some(decorated)
     }
 }
@@ -841,6 +954,50 @@ fn is_safe_adjustment(adjustment: &FontAdjustment) -> bool {
         && adjustment.horizontal_scale_ratio > 0.0
 }
 
+fn control_tag_fragment_values_are_safe(
+    adjustment: &FontAdjustment,
+    input_format: &TextFormatState,
+    base_format: BaseTextFormat,
+    layout_override: Option<&LayoutGlyphOverride>,
+) -> bool {
+    let active_font_size = input_format.effective_font_size().or(base_format.font_size);
+    let metrics = adjustment
+        .effective_metrics(active_font_size)
+        .unwrap_or_default();
+    let size_factor = layout_override.map_or(1.0, |item| item.size_factor);
+    let profile_size_ratio = if input_format.profile_size_allowed() {
+        metrics.size_ratio
+    } else {
+        1.0
+    };
+    let size_ratio = profile_size_ratio * size_factor;
+    let horizontal_scale_ratio = adjustment.horizontal_scale_ratio / size_factor;
+    let vertical_scale_ratio = adjustment.vertical_scale_ratio / size_factor;
+    let tracking_px = layout_override
+        .and_then(|item| item.tracking_px)
+        .or_else(|| {
+            (active_font_size.is_some()
+                && base_format.char_spacing.is_some()
+                && !approximately_equal(metrics.tracking_adjust_em, 0.0))
+            .then(|| {
+                base_format.char_spacing.unwrap_or_default()
+                    + active_font_size.unwrap_or_default() * metrics.tracking_adjust_em
+            })
+        });
+    let baseline_shift = active_font_size.unwrap_or_default() * metrics.baseline_shift_em;
+
+    size_ratio.is_finite()
+        && size_ratio > 0.0
+        && horizontal_scale_ratio.is_finite()
+        && horizontal_scale_ratio > 0.0
+        && vertical_scale_ratio.is_finite()
+        && vertical_scale_ratio > 0.0
+        && tracking_px.is_none_or(f64::is_finite)
+        && (active_font_size.is_none()
+            || approximately_equal(metrics.baseline_shift_em, 0.0)
+            || baseline_shift.is_finite())
+}
+
 fn write_control_tag_run(
     output: &mut String,
     source: &str,
@@ -852,11 +1009,15 @@ fn write_control_tag_run(
         output.push_str(&source[run.range.utf8.clone()]);
         return;
     };
-    let has_font = !adjustment.font_family.is_empty();
+    let has_font = run.input_format.profile_font_allowed() && !adjustment.font_family.is_empty();
     if has_font {
         output.push_str("<@");
         output.push_str(&adjustment.font_family);
         output.push('>');
+        write_at_format_restoration(output, &run.input_format);
+        if has_s_optional_format(&run.input_format) {
+            write_s_optional_restoration(output, &run.input_format);
+        }
     }
 
     let mut cursor = run.range.utf8.start;
@@ -869,6 +1030,7 @@ fn write_control_tag_run(
                 source,
                 cursor..item.utf8.start,
                 adjustment,
+                &run.input_format,
                 base_format,
                 None,
             );
@@ -878,6 +1040,7 @@ fn write_control_tag_run(
             source,
             item.utf8.clone(),
             adjustment,
+            &run.input_format,
             base_format,
             Some(item),
         );
@@ -889,6 +1052,7 @@ fn write_control_tag_run(
             source,
             cursor..run.range.utf8.end,
             adjustment,
+            &run.input_format,
             base_format,
             None,
         );
@@ -896,6 +1060,10 @@ fn write_control_tag_run(
 
     if has_font {
         output.push_str("<@>");
+        write_at_format_restoration(output, &run.input_format);
+        if has_s_optional_format(&run.input_format) {
+            write_s_optional_restoration(output, &run.input_format);
+        }
     }
 }
 
@@ -904,41 +1072,47 @@ fn write_control_tag_fragment(
     source: &str,
     range: Range<usize>,
     adjustment: &FontAdjustment,
+    input_format: &TextFormatState,
     base_format: BaseTextFormat,
     layout_override: Option<&LayoutGlyphOverride>,
 ) {
     if range.is_empty() {
         return;
     }
+    let active_font_size = input_format.effective_font_size().or(base_format.font_size);
     let metrics = adjustment
-        .effective_metrics(base_format.font_size)
+        .effective_metrics(active_font_size)
         .unwrap_or_default();
     let size_factor = layout_override.map_or(1.0, |item| item.size_factor);
-    let size_ratio = metrics.size_ratio * size_factor;
+    let profile_size_ratio = if input_format.profile_size_allowed() {
+        metrics.size_ratio
+    } else {
+        1.0
+    };
+    let size_ratio = profile_size_ratio * size_factor;
     let horizontal_scale_ratio = adjustment.horizontal_scale_ratio / size_factor;
     let vertical_scale_ratio = adjustment.vertical_scale_ratio / size_factor;
     let has_size = !approximately_equal(size_ratio, 1.0);
     let tracking_px = layout_override
         .and_then(|item| item.tracking_px)
         .or_else(|| {
-            (base_format.font_size.is_some()
+            (active_font_size.is_some()
                 && base_format.char_spacing.is_some()
                 && !approximately_equal(metrics.tracking_adjust_em, 0.0))
             .then(|| {
                 base_format.char_spacing.unwrap_or_default()
-                    + base_format.font_size.unwrap_or_default() * metrics.tracking_adjust_em
+                    + active_font_size.unwrap_or_default() * metrics.tracking_adjust_em
             })
         });
     let has_horizontal = !approximately_equal(horizontal_scale_ratio, 1.0);
     let has_vertical = !approximately_equal(vertical_scale_ratio, 1.0);
-    let baseline_shift = base_format.font_size.unwrap_or_default() * metrics.baseline_shift_em;
+    let baseline_shift = active_font_size.unwrap_or_default() * metrics.baseline_shift_em;
     let has_baseline =
-        base_format.font_size.is_some() && !approximately_equal(metrics.baseline_shift_em, 0.0);
+        active_font_size.is_some() && !approximately_equal(metrics.baseline_shift_em, 0.0);
 
     if has_size {
-        output.push_str("<s*");
-        output.push_str(&format_control_number(size_ratio));
-        output.push('>');
+        let size_field = format!("*{}", format_control_number(size_ratio));
+        write_s_control_tag(output, Some(&size_field), input_format);
     }
     if let Some(tracking_px) = tracking_px {
         output.push_str("<gw");
@@ -975,7 +1149,99 @@ fn write_control_tag_fragment(
     }
     if has_size {
         output.push_str("<s>");
+        write_s_format_restoration(output, input_format);
     }
+}
+
+fn has_s_optional_format(format: &TextFormatState) -> bool {
+    format.s_font_override().is_some()
+        || format.s_style_override().is_some()
+        || format.s_outline_override().is_some()
+}
+
+fn write_at_format_restoration(output: &mut String, format: &TextFormatState) {
+    let component_overrides = format.at_style_component_overrides();
+    let styles = format.at_style_override().unwrap_or_default();
+    debug_assert!(format.at_decoration_override().is_none());
+
+    let mut added = String::new();
+    let mut removed = String::new();
+    for (is_owned, enabled, letter) in [
+        (component_overrides.bold, styles.bold, 'B'),
+        (component_overrides.italic, styles.italic, 'I'),
+        (component_overrides.strike, styles.strike, 'S'),
+    ] {
+        if is_owned {
+            if enabled {
+                added.push(letter);
+            } else {
+                removed.push(letter);
+            }
+        }
+    }
+    if !added.is_empty() {
+        output.push_str("<@+");
+        output.push_str(&added);
+        output.push('>');
+    }
+    if !removed.is_empty() {
+        output.push_str("<@-");
+        output.push_str(&removed);
+        output.push('>');
+    }
+}
+
+fn write_s_optional_restoration(output: &mut String, format: &TextFormatState) {
+    write_s_control_tag(output, Some("*1"), format);
+}
+
+fn write_s_format_restoration(output: &mut String, format: &TextFormatState) {
+    if format.profile_size_allowed() {
+        if has_s_optional_format(format) {
+            write_s_control_tag(output, None, format);
+        }
+        return;
+    }
+
+    let Some((last, prefix)) = format.size_restore_expressions().split_last() else {
+        return;
+    };
+    for expression in prefix {
+        output.push_str("<s");
+        output.push_str(expression);
+        output.push('>');
+    }
+    write_s_control_tag(output, Some(last), format);
+}
+
+fn write_s_control_tag(output: &mut String, size_field: Option<&str>, format: &TextFormatState) {
+    let font = format.s_font_override();
+    let style = format.s_style_override();
+    let outline = format.s_outline_override();
+    let last_field = if outline.is_some() {
+        3
+    } else if style.is_some() {
+        2
+    } else if font.is_some() {
+        1
+    } else {
+        0
+    };
+    output.push_str("<s");
+    output.push_str(size_field.unwrap_or_default());
+    if last_field >= 1 {
+        output.push(',');
+        output.push_str(font.unwrap_or_default());
+    }
+    if last_field >= 2 {
+        output.push(',');
+        output.push_str(&style.unwrap_or_default().as_control_letters());
+    }
+    if last_field >= 3 {
+        output.push(',');
+        output.push_str(outline.unwrap_or_default());
+    }
+    output.push('>');
 }
 
 fn write_relative_position_tag(output: &mut String, shift_y: f64) {
@@ -1168,16 +1434,20 @@ mod tests {
         monospaced_fonts: HashMap<String, bool>,
         glyph_top_extents: HashMap<(String, char), f64>,
         glyph_advances: HashMap<(String, char), f64>,
+        glyph_queries: Vec<(String, char)>,
+        vertical_metric_queries: Vec<String>,
     }
 
     impl GlyphCoverage for TestCoverage {
         fn has_glyph(&mut self, font_family: &str, character: char) -> Option<bool> {
+            self.glyph_queries.push((font_family.to_owned(), character));
             self.values
                 .get(&(font_family.to_owned(), character))
                 .copied()
         }
 
         fn vertical_metrics(&mut self, font_family: &str) -> Option<FontVerticalMetrics> {
+            self.vertical_metric_queries.push(font_family.to_owned());
             self.vertical_metrics.get(font_family).copied()
         }
 
@@ -1669,7 +1939,7 @@ mod tests {
     }
 
     #[test]
-    fn layout_decoration_fails_open_with_zero_offset_for_control_text() {
+    fn layout_decoration_supports_basic_color_tags_with_zero_offset() {
         let mut coverage = TestCoverage::default();
         let layout = decorate_plain_text_layout_with_coverage(
             "<#red>2026<#>",
@@ -1680,7 +1950,10 @@ mod tests {
             &mut coverage,
         );
 
-        assert_eq!(layout, DecoratedTextLayout::unchanged("<#red>2026<#>"));
+        assert_eq!(layout.object_offset_y, 0.0);
+        assert!(layout.text.starts_with("<#red><@Latin>"));
+        assert!(layout.text.ends_with("<@><#>"));
+        assert!(layout.text.contains("2026"));
     }
 
     #[test]
@@ -1746,12 +2019,294 @@ mod tests {
     }
 
     #[test]
+    fn tagged_runs_keep_ranges_in_the_original_utf8_and_utf16_source() {
+        let text = "<#red>A𠮷<#>\nあ";
+        let parsed = parse_control_text(text, ControlTextDefaults::default()).unwrap();
+        let mut coverage = UnknownGlyphCoverage;
+        let runs = resolve_parsed_text_runs(
+            text,
+            &parsed,
+            &CompositeFontProfile::neutral_default(),
+            &mut coverage,
+        );
+
+        assert_eq!(runs.len(), 3);
+        for run in &runs {
+            assert_eq!(
+                run.range.utf16.start,
+                text[..run.range.utf8.start].encode_utf16().count()
+            );
+            assert_eq!(
+                run.range.utf16.end,
+                text[..run.range.utf8.end].encode_utf16().count()
+            );
+        }
+        assert_eq!(&text[runs[0].range.utf8.clone()], "A𠮷");
+        assert_eq!(&text[runs[1].range.utf8.clone()], "\n");
+        assert_eq!(&text[runs[2].range.utf8.clone()], "あ");
+    }
+
+    #[test]
+    fn decorates_visible_runs_between_color_tags() {
+        let decorated = decorate_plain_text(
+            "国<#ff0000>LINE<#>123",
+            &decoration_profile(),
+            Some(100.0),
+            Some(0.0),
+        );
+
+        assert!(decorated.starts_with("<@Japanese>国<@><#ff0000>"));
+        assert!(decorated.contains("<p+0,-2>LINE<p>"));
+        assert!(decorated.contains("<@><#><@Latin>"));
+        assert!(decorated.contains("<p+0,-2>123<p>"));
+        assert_eq!(decorated.matches("<#ff0000>").count(), 1);
+        assert_eq!(decorated.matches("<#>").count(), 1);
+    }
+
+    #[test]
+    fn input_size_wins_but_other_profile_attributes_use_the_effective_size() {
+        let decorated = decorate_plain_text(
+            "<s120>国LINE<s>",
+            &decoration_profile(),
+            Some(100.0),
+            Some(0.0),
+        );
+
+        assert!(!decorated.contains("<s*1.15>"));
+        assert!(decorated.contains("<@Japanese>国<@>"));
+        assert!(decorated.contains("<@Latin><gw6><tw1.1><th0.9><p+0,-2.4>LINE"));
+        assert!(decorated.starts_with("<s120>"));
+        assert!(decorated.ends_with("<s>"));
+    }
+
+    #[test]
+    fn generated_size_reset_replays_the_exact_input_size_expression() {
+        let parsed = parse_control_text(
+            "<s100.123456789>A",
+            ControlTextDefaults {
+                font_size: Some(100.0),
+                font_family: None,
+            },
+        )
+        .unwrap();
+        let mut restored = String::new();
+        write_s_format_restoration(&mut restored, &parsed.spans[0].format);
+
+        assert_eq!(restored, "<s100.123456789>");
+    }
+
+    #[test]
+    fn generated_resets_replay_the_exact_input_outline_value() {
+        let decorated = decorate_plain_text(
+            "<s,,,2.123456789>A<s>",
+            &decoration_profile(),
+            Some(100.0),
+            Some(0.0),
+        );
+
+        assert!(decorated.contains("<s*1,,,2.123456789>"));
+        assert!(!decorated.contains("2.123457"));
+    }
+
+    #[test]
+    fn input_font_suppresses_profile_font_and_fallback_queries() {
+        let mut profile = decoration_profile();
+        profile.western_fallbacks = vec![adjustment("Latin Fallback", 1.0, 0.0, 0.0, 1.0, 1.0)];
+        let mut coverage = TestCoverage::default();
+        let decorated = decorate_plain_text_with_coverage(
+            "<@User Font>国LINE<@>",
+            &profile,
+            Some(100.0),
+            Some(3.0),
+            &mut coverage,
+        );
+
+        assert!(!decorated.contains("<@Japanese>"));
+        assert!(!decorated.contains("<@Latin>"));
+        assert!(!decorated.contains("Latin Fallback"));
+        assert!(decorated.contains("<s*1.15><gw8><tw1.1><th0.9><p+0,-2>LINE"));
+        assert!(coverage.glyph_queries.is_empty());
+    }
+
+    #[test]
+    fn input_font_does_not_enable_adjustments_from_a_disabled_profile_row() {
+        let mut profile = CompositeFontProfile::neutral_default();
+        profile.western = adjustment("", 1.5, 0.25, 12.0, 0.8, 1.2);
+
+        assert_eq!(
+            decorate_plain_text("<@User Font>A<@>", &profile, Some(100.0), Some(3.0)),
+            "<@User Font>A<@>"
+        );
+    }
+
+    #[test]
+    fn layout_metrics_use_the_active_input_font() {
+        let mut profile = CompositeFontProfile::neutral_default();
+        profile.western.font_family = "Profile Font".to_owned();
+        profile.kanji.font_family = "Tall Profile Font".to_owned();
+        let mut coverage = TestCoverage::default();
+        coverage.vertical_metrics.insert(
+            "User Font".to_owned(),
+            FontVerticalMetrics {
+                ascent_em: 0.7,
+                descent_em: 0.2,
+                line_gap_em: 0.0,
+            },
+        );
+        coverage
+            .monospaced_fonts
+            .insert("User Font".to_owned(), true);
+        coverage
+            .glyph_top_extents
+            .insert(("User Font".to_owned(), 'A'), 0.7);
+        coverage
+            .glyph_top_extents
+            .insert(("User Font".to_owned(), '国'), 0.9);
+        coverage
+            .glyph_advances
+            .insert(("User Font".to_owned(), 'A'), 0.5);
+        coverage
+            .glyph_advances
+            .insert(("User Font".to_owned(), '国'), 1.0);
+
+        let layout = decorate_plain_text_layout_with_coverage(
+            "<@User Font>A国<@>",
+            &profile,
+            Some(100.0),
+            Some(0.0),
+            Some("Object Font"),
+            &mut coverage,
+        );
+
+        assert!(!layout.text.contains("Profile Font"));
+        assert!(!layout.text.contains("Tall Profile Font"));
+        assert!(
+            coverage
+                .vertical_metric_queries
+                .iter()
+                .all(|font| font == "User Font")
+        );
+    }
+
+    #[test]
+    fn layout_clipping_uses_each_runs_active_input_size() {
+        let mut profile = CompositeFontProfile::neutral_default();
+        profile.western.font_family = "Short".to_owned();
+        profile.kanji.font_family = "Tall".to_owned();
+        let mut coverage = TestCoverage::default();
+        coverage.vertical_metrics.insert(
+            "Short".to_owned(),
+            FontVerticalMetrics {
+                ascent_em: 0.7,
+                descent_em: 0.2,
+                line_gap_em: 0.0,
+            },
+        );
+        coverage.vertical_metrics.insert(
+            "Tall".to_owned(),
+            FontVerticalMetrics {
+                ascent_em: 0.9,
+                descent_em: 0.2,
+                line_gap_em: 0.0,
+            },
+        );
+        coverage.monospaced_fonts.insert("Short".to_owned(), true);
+        coverage
+            .glyph_top_extents
+            .insert(("Short".to_owned(), 'A'), 0.7);
+        coverage
+            .glyph_top_extents
+            .insert(("Tall".to_owned(), '国'), 0.9);
+        coverage
+            .glyph_advances
+            .insert(("Short".to_owned(), 'A'), 0.5);
+        coverage
+            .glyph_advances
+            .insert(("Tall".to_owned(), '国'), 1.0);
+
+        let layout = decorate_plain_text_layout_with_coverage(
+            "<s50>A<s><s100>国<s>",
+            &profile,
+            Some(100.0),
+            Some(0.0),
+            Some("Object Font"),
+            &mut coverage,
+        );
+
+        assert!(layout.text.contains("<s*2.6>"));
+        assert!(layout.text.contains("<gw-80>"));
+    }
+
+    #[test]
+    fn profile_size_resumes_after_input_size_reset() {
+        let decorated = decorate_plain_text(
+            "<s120>ABC<s>国123",
+            &decoration_profile(),
+            Some(100.0),
+            Some(0.0),
+        );
+        let reset = decorated
+            .find("<s><@Japanese>")
+            .expect("input size reset is preserved");
+        let (before, after) = decorated.split_at(reset);
+
+        assert!(!before.contains("<s*1.15>"));
+        assert!(after.contains("<@Latin><s*1.15>"));
+        assert!(after.contains("<gw5>"));
+        assert!(after.contains("<p+0,-2>"));
+    }
+
+    #[test]
+    fn s_tag_fields_override_profile_independently() {
+        let decorated = decorate_plain_text(
+            "<s120,User Font,B,8>LINE<s>",
+            &decoration_profile(),
+            Some(100.0),
+            Some(0.0),
+        );
+
+        assert!(!decorated.contains("<@Latin>"));
+        assert!(!decorated.contains("<s*1.15>"));
+        assert!(decorated.contains("<gw6>"));
+        assert!(decorated.contains("<tw1.1>"));
+        assert!(decorated.contains("<th0.9>"));
+        assert!(decorated.contains("<p+0,-2.4>"));
+        assert!(decorated.starts_with("<s120,User Font,B,8>"));
+        assert!(decorated.ends_with("<s>"));
+    }
+
+    #[test]
+    fn restores_active_input_styles_around_generated_font_runs() {
+        let decorated = decorate_plain_text(
+            "<@+B>国<#red>LINE<#><@+I>123<@-BIS>",
+            &decoration_profile(),
+            Some(100.0),
+            Some(0.0),
+        );
+
+        assert!(decorated.contains("<@Japanese><@+B>国<@><@+B>"));
+        assert!(decorated.contains("<#red><@Latin><@+B>"));
+        assert!(decorated.contains("<@><@+B><#><@+I>"));
+        assert!(decorated.contains("<@Latin><@+BI>"));
+        assert!(decorated.ends_with("<@-BIS>"));
+    }
+
+    #[test]
+    fn basic_tag_state_and_original_line_endings_cross_run_boundaries() {
+        let input = "<#red>国\r\nLINE\n123<#>";
+        let decorated = decorate_plain_text(input, &decoration_profile(), Some(100.0), Some(0.0));
+
+        assert_eq!(decorated.matches("\r\n").count(), 1);
+        assert_eq!(decorated.matches('\n').count(), 2);
+        assert!(decorated.contains("<@><@Latin>") || decorated.contains("\r\n<@Latin>"));
+        assert!(decorated.starts_with("<#red>"));
+        assert!(decorated.ends_with("<#>"));
+    }
+
+    #[test]
     fn possible_control_text_is_returned_byte_for_byte() {
         let profile = decoration_profile();
         for text in [
-            "<#ff0000>国LINE<#>",
-            "<@User Font>LINE<@>",
-            "<s120>国<s>",
             "</>漢字<!>かんじ</>",
             "<// comment > remains opaque //>国",
             "<?obj.rz=obj.time*360?>国",
@@ -1759,6 +2314,10 @@ mod tests {
             "<future-control>国",
             "閉じていない<",
             "1 < 2",
+            "<#ff0000>国<future-control>LINE<#>",
+            "<#not-a-preset>国<#>",
+            "<sNaN>国<s>",
+            "<@User Font,7B>国<@>",
         ] {
             assert_eq!(
                 decorate_plain_text(text, &profile, Some(100.0), Some(0.0)),
@@ -1768,10 +2327,97 @@ mod tests {
     }
 
     #[test]
+    fn unsupported_or_malformed_control_text_fails_open_for_layout_too() {
+        let profile = decoration_profile();
+        for text in [
+            "<?obj.rz=obj.time*360?>国",
+            "</>漢字<!>かんじ</>",
+            "<// comment //>国",
+            "<future-control>国",
+            "閉じていない<",
+            "<#red>国<future-control>LINE<#>",
+            "<s120,,,>国",
+        ] {
+            let mut coverage = TestCoverage::default();
+            let layout = decorate_plain_text_layout_with_coverage(
+                text,
+                &profile,
+                Some(100.0),
+                Some(0.0),
+                Some("Object Font"),
+                &mut coverage,
+            );
+            assert_eq!(layout, DecoratedTextLayout::unchanged(text));
+        }
+    }
+
+    #[test]
     fn generated_text_is_idempotent() {
         let profile = decoration_profile();
-        let once = decorate_plain_text("国LINE", &profile, Some(100.0), Some(0.0));
-        let twice = decorate_plain_text(&once, &profile, Some(100.0), Some(0.0));
+        for input in [
+            "国LINE",
+            "国<#ff0000>LINE<#>123",
+            "<s120>ABC<s>国123",
+            "<@User Font>国LINE<@>",
+            "<@+B><#red>国LINE<#><@-B>",
+        ] {
+            let once = decorate_plain_text(input, &profile, Some(100.0), Some(0.0));
+            let twice = decorate_plain_text(&once, &profile, Some(100.0), Some(0.0));
+            assert_eq!(twice, once, "input: {input}");
+        }
+    }
+
+    #[test]
+    fn generated_layout_text_is_idempotent() {
+        let profile = decoration_profile();
+        let mut coverage = TestCoverage::default();
+        let once = decorate_plain_text_layout_with_coverage(
+            "<#red><s120>国LINE<s><#>",
+            &profile,
+            Some(100.0),
+            Some(0.0),
+            Some("Object Font"),
+            &mut coverage,
+        );
+        let mut coverage = TestCoverage::default();
+        let twice = decorate_plain_text_layout_with_coverage(
+            &once.text,
+            &profile,
+            Some(100.0),
+            Some(0.0),
+            Some("Object Font"),
+            &mut coverage,
+        );
+        assert_eq!(twice, once);
+    }
+
+    #[test]
+    fn supported_generated_tags_are_idempotent_without_opaque_profile_tags() {
+        let mut profile = CompositeFontProfile::neutral_default();
+        profile.western.font_family = "Font Only".to_owned();
+        profile.western.size_ratio = 1.2;
+
+        for input in ["ABC", "<@+B>ABC<@-B>", "<s,,B>ABC<s>"] {
+            let once = decorate_plain_text(input, &profile, Some(100.0), Some(0.0));
+            assert!(!once.contains("<gw"));
+            assert!(!once.contains("<tw"));
+            assert!(!once.contains("<th"));
+            assert!(!once.contains("<p"));
+            let twice = decorate_plain_text(&once, &profile, Some(100.0), Some(0.0));
+            assert_eq!(twice, once, "input: {input}");
+        }
+    }
+
+    #[test]
+    fn font_run_restoration_preserves_unknown_relative_input_size() {
+        let mut profile = CompositeFontProfile::neutral_default();
+        profile.western.font_family = "Font Only".to_owned();
+        let input = "<s*1.5,,B>A<s>";
+
+        let once = decorate_plain_text(input, &profile, None, None);
+        assert!(once.contains("<@Font Only><s*1,,B>A<@><s*1,,B>"));
+        assert!(!once.contains("<@Font Only><s*1.5,,B>A"));
+        let twice = decorate_plain_text(&once, &profile, None, None);
         assert_eq!(twice, once);
     }
 
@@ -1787,6 +2433,19 @@ mod tests {
         assert_eq!(
             decorate_plain_text("ABC", &profile, Some(100.0), Some(0.0)),
             "ABC"
+        );
+    }
+
+    #[test]
+    fn overflowing_values_derived_from_an_input_size_fail_open() {
+        let mut profile = decoration_profile();
+        profile.western.baseline_shift_em = 10.0;
+        profile.western.tracking_adjust_em = 10.0;
+        let input = format!("<s1{}>A<s>", "0".repeat(308));
+
+        assert_eq!(
+            decorate_plain_text(&input, &profile, Some(100.0), Some(0.0)),
+            input
         );
     }
 
