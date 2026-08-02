@@ -12,7 +12,7 @@ effect.name=テキスト
 文字揃え=中央揃え[中]
 B=0
 I=0
-テキスト=<?local settings={\n    profile="default", -- 合成フォントエディターで保存したプロファイル名\n    text=[=[ここにテキストを入力]=],\n}\nlocal compositefont=obj.module("compositefont")\nlocal font,size,_,_,_,_,_,spacing=obj.getfont()\nlocal text\nif compositefont.api_version()>=9 then\n    text=compositefont.decorate_layout(settings.text,settings.profile,size,spacing,font)\nelse\n    text=compositefont.decorate(settings.text,settings.profile,size,spacing)\nend\nobj.mes(text)\n?>
+テキスト=<?local settings={\n    profile="default", -- 合成フォントエディターで保存したプロファイル名\n    text=[=[ここにテキストを入力]=],\n}\nlocal text,profile=settings.text,settings.profile\nlocal compositefont=obj.module("compositefont")\nlocal font,size,_,_,_,_,_,spacing=obj.getfont()\nif compositefont.api_version()>=9 then\n    obj.mes(compositefont.decorate_layout(text,profile,size,spacing,font))\nelse\n    obj.mes(compositefont.decorate(text,profile,size,spacing))\nend\n?>
 文字毎に個別オブジェクト=0
 自動スクロール=0
 移動座標上に表示=0

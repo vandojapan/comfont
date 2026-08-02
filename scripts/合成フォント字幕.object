@@ -12,7 +12,7 @@ effect.name=テキスト
 文字揃え=中央揃え[中]
 B=0
 I=0
-テキスト=<?local settings={\n    id="",       -- セリフ準備のキャラクターID、または "L3" のようなレイヤー指定\n    profile="default", -- 合成フォントエディターで保存したプロファイル名\n}\nlocal compositefont=obj.module("compositefont")\nlocal font,size,_,_,_,_,_,spacing=obj.getfont()\nlocal use_layout=compositefont.api_version()>=9\nrequire("PSDToolKit").mes({\n    id=settings.id,\n    modifier=function(text)\n        if use_layout then\n            return compositefont.decorate_layout(text,settings.profile,size,spacing,font)\n        end\n        return compositefont.decorate(text,settings.profile,size,spacing)\n    end,\n},obj)\n?>
+テキスト=<?local settings={\n    id="",      -- セリフ準備のキャラクターID、または "L3" のようなレイヤー指定\n    profile="default", -- 合成フォントエディターで保存したプロファイル名\n}\nlocal id,profile=settings.id,settings.profile\nlocal voice=require("PSDToolKit.VoiceStates"):get(id)\nlocal restart_time=voice\n    and math.max(0,obj.time-(tonumber(voice.time) or 0))\n    or 0\nlocal wait_tag=string.format("<w%.9f>",restart_time)\nlocal compositefont=obj.module("compositefont")\nlocal font,size,_,_,_,_,_,spacing=obj.getfont()\nlocal use_layout=compositefont.api_version()>=9\nrequire("PSDToolKit").mes({\n    id=id,\n    modifier=function(text)\n        local decorated\n        if use_layout then\n            decorated=compositefont.decorate_layout(text,profile,size,spacing,font)\n        else\n            decorated=compositefont.decorate(text,profile,size,spacing)\n        end\n        return wait_tag..decorated\n    end,\n},obj)\n?>
 文字毎に個別オブジェクト=0
 自動スクロール=0
 移動座標上に表示=0

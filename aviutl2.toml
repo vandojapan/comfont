@@ -45,6 +45,16 @@ source = "scripts/合成フォント字幕.object"
 [artifacts.compositefont-subtitle-object.profiles.release]
 source = "scripts/合成フォント字幕.object"
 
+[artifacts.compositefont-name-object]
+destination = "Alias/合成フォント名前表示.object"
+placement_method = "copy"
+
+[artifacts.compositefont-name-object.profiles.debug]
+source = "scripts/合成フォント名前表示.object"
+
+[artifacts.compositefont-name-object.profiles.release]
+source = "scripts/合成フォント名前表示.object"
+
 [artifacts.compositefont-text-object]
 destination = "Alias/合成フォントテキスト.object"
 placement_method = "copy"

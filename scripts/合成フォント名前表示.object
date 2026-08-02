@@ -1,0 +1,19 @@
+[Object]
+[Object.0]
+effect.name=テキスト
+サイズ=64.00
+字間=0.00
+行間=0.00
+表示速度=0.00
+フォント=
+文字色=ffffff
+影・縁色=000000
+文字装飾=標準文字
+文字揃え=中央揃え[中]
+B=0
+I=0
+テキスト=<?local settings={\n    profile="default", -- 合成フォントエディターで保存したプロファイル名\n}\nlocal profile=settings.profile\nrequire("PSDToolKit").psdcall(function()\n    local voice_states=require("PSDToolKit.VoiceStates")\n    local frame=require("PSDToolKit.FrameState").get_current_frame()\n    local states=voice_states.states[frame] or {}\n    local selected_id,selected_time=nil,-math.huge\n\n    for key,voice in pairs(states) do\n        if type(key)=="string" and #key>1 and key:byte()==95 then\n            local character_id=key:sub(2)\n            local voice_time=tonumber(voice.time) or 0\n            if voice_time>selected_time\n              or (voice_time==selected_time\n                and (selected_id==nil or character_id>selected_id)) then\n                selected_id,selected_time=character_id,voice_time\n            end\n        end\n    end\n\n    if not selected_id then\n        return\n    end\n\n    local compositefont=obj.module("compositefont")\n    local font,size,_,_,_,_,_,spacing=obj.getfont()\n    if compositefont.api_version()>=9 then\n        obj.mes(compositefont.decorate_layout(\n            selected_id,profile,size,spacing,font\n        ))\n    else\n        obj.mes(compositefont.decorate(selected_id,profile,size,spacing))\n    end\nend)\n?>
+文字毎に個別オブジェクト=0
+自動スクロール=0
+移動座標上に表示=0
+オブジェクトの長さを自動調節=0
