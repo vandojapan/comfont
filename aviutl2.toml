@@ -18,7 +18,7 @@ destination = "Plugin/comfont.aux2"
 placement_method = "copy"
 
 [artifacts.compositefont-editor-aux2.profiles.debug]
-build = "cargo build -p compositefont-editor-plugin"
+build = "cargo build -p compositefont-editor-plugin --features egui-ui"
 source = "target/debug/compositefont_editor.dll"
 
 [artifacts.compositefont-editor-aux2.profiles.release]
@@ -35,32 +35,22 @@ source = "scripts/@compositefont-test.obj2"
 [artifacts.compositefont-test-script.profiles.release]
 enabled = false
 
-[artifacts.compositefont-subtitle-object]
-destination = "Alias/合成フォント字幕.object"
+[artifacts.compositefont-profile-anm2]
+destination = "Script/合成フォント.anm2"
 placement_method = "copy"
 
-[artifacts.compositefont-subtitle-object.profiles.debug]
-source = "scripts/合成フォント字幕.object"
+[artifacts.compositefont-profile-anm2.profiles.debug]
+source = "scripts/合成フォント.anm2"
 
-[artifacts.compositefont-subtitle-object.profiles.release]
-source = "scripts/合成フォント字幕.object"
+[artifacts.compositefont-profile-anm2.profiles.release]
+source = "scripts/合成フォント.anm2"
 
-[artifacts.compositefont-name-object]
-destination = "Alias/合成フォント名前表示.object"
+[artifacts.material-icons-license]
+destination = "Plugin/comfont-licenses/material-icons.txt"
 placement_method = "copy"
 
-[artifacts.compositefont-name-object.profiles.debug]
-source = "scripts/合成フォント名前表示.object"
+[artifacts.material-icons-license.profiles.debug]
+source = "resource/material-icons/LICENSE.txt"
 
-[artifacts.compositefont-name-object.profiles.release]
-source = "scripts/合成フォント名前表示.object"
-
-[artifacts.compositefont-text-object]
-destination = "Alias/合成フォントテキスト.object"
-placement_method = "copy"
-
-[artifacts.compositefont-text-object.profiles.debug]
-source = "scripts/合成フォントテキスト.object"
-
-[artifacts.compositefont-text-object.profiles.release]
-source = "scripts/合成フォントテキスト.object"
+[artifacts.material-icons-license.profiles.release]
+source = "resource/material-icons/LICENSE.txt"

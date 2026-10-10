@@ -24,6 +24,7 @@ pub fn load_document(path: &Path) -> Result<ProfileDocument, String> {
 
 pub fn save_document(path: &Path, document: &ProfileDocument) -> Result<(), String> {
     validate_document(document)?;
+    crate::profile_selector::generate(document)?;
     let parent = path
         .parent()
         .ok_or_else(|| format!("保存先{}に親フォルダがありません", path.display()))?;
@@ -32,7 +33,20 @@ pub fn save_document(path: &Path, document: &ProfileDocument) -> Result<(), Stri
     let json = serde_json::to_vec_pretty(document)
         .map_err(|error| format!("プロファイルをJSONへ変換できません: {error}"))?;
     std::fs::write(path, json)
-        .map_err(|error| format!("{}へ保存できません: {error}", path.display()))
+        .map_err(|error| format!("{}へ保存できません: {error}", path.display()))?;
+    Ok(())
+}
+
+pub fn save_document_with_selector(path: &Path, document: &ProfileDocument) -> Result<(), String> {
+    save_document(path, document)?;
+    let root = path
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("anm2の保存先が不正です")?;
+    crate::profile_selector::update(&root.join("Script").join("合成フォント.anm2"), document)
+        .map_err(|e| {
+            format!("プロファイルは保存済みですが、anm2の選択肢を更新できませんでした: {e}")
+        })
 }
 
 fn validate_document(document: &ProfileDocument) -> Result<(), String> {
@@ -53,6 +67,7 @@ fn validate_document(document: &ProfileDocument) -> Result<(), String> {
         return Err("defaultプロファイルがありません。".to_owned());
     }
     for (index, profile) in document.profiles.iter().enumerate() {
+        profile.validate_ranges()?;
         if profile.name.trim().is_empty() {
             return Err(format!("{}件目のプロファイル名が空です。", index + 1));
         }

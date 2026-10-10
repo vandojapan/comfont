@@ -1,5 +1,7 @@
 mod control_text;
 mod font_coverage;
+pub mod preview;
+mod render;
 
 use aviutl2::module::{IntoScriptModuleReturnValue, ScriptModule, ScriptModuleFunctions};
 use compositefont_core::{
@@ -20,7 +22,7 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-const API_VERSION: i32 = 10;
+const API_VERSION: i32 = 11;
 // AviUtl2 rasterizes text size at twice the value reported by obj.getfont(),
 // while gw and the resulting object bounds use pixel units.
 const TEXT_RASTER_SIZE_SCALE: f64 = 2.0;
@@ -59,6 +61,8 @@ fn integration_test_profile() -> CompositeFontProfile {
     adobe_kanji.font_family = "A P-OTF UD新ゴ Pr6N B".to_owned();
 
     CompositeFontProfile {
+        custom_ranges: Vec::new(),
+        disabled_classes: Vec::new(),
         name: INTEGRATION_TEST_PROFILE.to_owned(),
         western: western.clone(),
         western_fallbacks: Vec::new(),
@@ -88,6 +92,8 @@ fn clipping_test_profile() -> CompositeFontProfile {
         ..FontAdjustment::neutral()
     };
     CompositeFontProfile {
+        custom_ranges: Vec::new(),
+        disabled_classes: Vec::new(),
         name: CLIPPING_TEST_PROFILE.to_owned(),
         western: ocrb.clone(),
         western_fallbacks: Vec::new(),
@@ -150,6 +156,9 @@ fn load_profile_store(path: &Path) -> Result<ProfileStore, String> {
                     "{}にdefaultプロファイルがありません",
                     path.display()
                 ));
+            }
+            for profile in &document.profiles {
+                profile.validate_ranges()?;
             }
             document.profiles
         }
@@ -529,8 +538,9 @@ fn resolved_adjustment_for_format(
         resolved_adjustment(profile, character, coverage)
     } else {
         let mut adjustment = profile
-            .adjustment_for(classify_character(character))
-            .clone();
+            .adjustment_for_character(character)
+            .cloned()
+            .unwrap_or_else(FontAdjustment::neutral);
         if adjustment.font_family.is_empty() {
             return FontAdjustment::neutral();
         }
@@ -803,10 +813,22 @@ fn resolved_adjustment_with_index(
 
     let mut last = (FontAdjustment::neutral(), 0);
     let mut first_unknown = None;
-    for (index, adjustment) in adjustments_for_class(profile, class)
-        .into_iter()
-        .enumerate()
-    {
+    let candidates = if let Some((_, range)) = profile.matching_range(character) {
+        let mut primary = range.adjustment.clone();
+        let legacy = std::mem::take(&mut primary.fallback_font_families);
+        let mut candidates = vec![primary.clone()];
+        candidates.extend(legacy.into_iter().map(|family| {
+            let mut a = primary.clone();
+            a.font_family = family;
+            a
+        }));
+        candidates
+    } else if profile.class_enabled(class) {
+        adjustments_for_class(profile, class)
+    } else {
+        Vec::new()
+    };
+    for (index, adjustment) in candidates.into_iter().enumerate() {
         if adjustment.font_family.is_empty() {
             continue;
         }
@@ -1313,12 +1335,19 @@ impl IntoScriptModuleReturnValue for ScriptResolvedFont {
 #[aviutl2::plugin(ScriptModule)]
 pub struct CompositeFontModule {
     profiles: Mutex<ReloadableProfiles>,
+    render_cache: Mutex<
+        std::collections::VecDeque<(
+            render::RenderRequest,
+            Option<std::sync::Arc<render::Bitmap>>,
+        )>,
+    >,
 }
 
 impl ScriptModule for CompositeFontModule {
     fn new(_info: aviutl2::AviUtl2Info) -> aviutl2::AnyResult<Self> {
         Ok(Self {
             profiles: Mutex::new(ReloadableProfiles::new(profile_path())),
+            render_cache: Mutex::new(std::collections::VecDeque::new()),
         })
     }
 
@@ -1335,6 +1364,100 @@ impl ScriptModule for CompositeFontModule {
 
 #[aviutl2::module::functions]
 impl CompositeFontModule {
+    fn profile_names(&self) -> Vec<String> {
+        let Ok(mut profiles) = self.profiles.lock() else {
+            return Vec::new();
+        };
+        profiles.refresh_if_changed();
+        profiles.store.profiles().map(|p| p.name.clone()).collect()
+    }
+
+    fn profile_name(&self, selection: i32, saved_label: Option<String>) -> Option<String> {
+        if selection < 0 {
+            return None;
+        }
+        let Ok(mut profiles) = self.profiles.lock() else {
+            return None;
+        };
+        profiles.refresh_if_changed();
+        let mut matches = profiles
+            .store
+            .profiles()
+            .filter(|p| compositefont_core::profile_selection_id(&p.name) == selection);
+        let result = matches.next()?.name.clone();
+        // A hash collision must fail closed, never select an arbitrary profile.
+        if matches.next().is_some() {
+            return None;
+        }
+        if saved_label
+            .is_some_and(|label| label != compositefont_core::profile_selection_label(&result))
+        {
+            return None;
+        }
+        Some(result)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_text(
+        &self,
+        text: String,
+        profile: String,
+        font: String,
+        size: f64,
+        spacing: f64,
+        line_spacing: f64,
+        color: String,
+        align: i32,
+        bold: bool,
+        italic: bool,
+        section: &aviutl2::generic::ReadSection,
+    ) -> Option<aviutl2::module::ScriptModuleUserData<render::RenderedText>> {
+        let profile = {
+            let mut profiles = self.profiles.lock().ok()?;
+            profiles.refresh_if_changed();
+            profiles.store.profile(Some(&profile)).ok()?.clone()
+        };
+        let request = render::RenderRequest {
+            text,
+            profile,
+            font,
+            size,
+            spacing,
+            line_spacing,
+            color,
+            align,
+            bold,
+            italic,
+        };
+        let mut cache = self.render_cache.lock().ok()?;
+        if let Some(index) = cache.iter().position(|(key, _)| key == &request) {
+            let entry = cache.remove(index)?;
+            let bitmap = entry.1.clone();
+            cache.push_back(entry);
+            return bitmap.map(|bitmap| render::RenderedText { bitmap }.into());
+        }
+        let bitmap = match render::render(section, &request) {
+            Ok(bitmap) => bitmap.map(std::sync::Arc::new),
+            Err(error) => {
+                let _ =
+                    aviutl2::logger::write_error_log(&format!("comfont anm2 renderer: {error}"));
+                None
+            }
+        };
+        cache.push_back((request, bitmap.clone()));
+        while cache.len() > 16
+            || cache
+                .iter()
+                .filter_map(|(_, b)| b.as_ref())
+                .map(|b| b.bgra.len())
+                .sum::<usize>()
+                > 64 * 1024 * 1024
+        {
+            cache.pop_front();
+        }
+        bitmap.map(|bitmap| render::RenderedText { bitmap }.into())
+    }
+
     fn api_version() -> i32 {
         API_VERSION
     }
@@ -1492,6 +1615,8 @@ mod tests {
         let latin = adjustment("Latin", 1.15, 0.02, 0.05, 0.9, 1.1);
         let japanese = adjustment("Japanese", 1.0, 0.0, 0.0, 1.0, 1.0);
         CompositeFontProfile {
+            custom_ranges: Vec::new(),
+            disabled_classes: Vec::new(),
             name: "subtitle".to_owned(),
             western: latin.clone(),
             western_fallbacks: Vec::new(),
@@ -2476,6 +2601,36 @@ mod tests {
                 &mut coverage,
             ),
             "国LINE"
+        );
+    }
+
+    #[test]
+    fn custom_range_rendering_wins_over_classification_and_input_tags_win_over_it() {
+        let mut profile = decoration_profile();
+        let custom = adjustment("Custom", 1.25, 0.0, 0.0, 1.0, 1.0);
+        profile
+            .custom_ranges
+            .push(compositefont_core::UnicodeRange {
+                name: "Latin".to_owned(),
+                start: 0x41,
+                end: 0x5A,
+                adjustment: custom,
+            });
+        let decorated = decorate_plain_text("ABC漢", &profile, Some(64.0), Some(0.0));
+        assert!(decorated.contains("Custom"));
+        assert!(decorated.contains("Japanese"));
+        let tagged = decorate_plain_text("<@Input>ABC<@>", &profile, Some(64.0), Some(0.0));
+        assert!(tagged.contains("Input"));
+        assert!(!tagged.contains("Custom"));
+        profile.custom_ranges[0].adjustment = FontAdjustment::neutral();
+        assert_eq!(
+            decorate_plain_text("ABC", &profile, Some(64.0), Some(0.0)),
+            "ABC"
+        );
+        profile.disabled_classes = vec![compositefont_core::CharacterClass::Kanji];
+        assert_eq!(
+            decorate_plain_text("ABC漢", &profile, Some(64.0), Some(0.0)),
+            "ABC漢"
         );
     }
 }

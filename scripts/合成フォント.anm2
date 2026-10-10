@@ -1,0 +1,42 @@
+--label:テキスト装飾
+--select@selection:comfont::プロファイル選択=0,無装飾=-1,default=0
+--group:旧版のプロファイル指定,false
+--string@profile:comfont::プロファイル,
+--group:
+-- 本文は変更せず、aux2モジュールで描画画像だけを差し替える。
+-- 選択肢はエディターの保存時に更新。項目定義の反映にはAviUtl2の再起動が必要。
+local ok, module = pcall(obj.module, "compositefont")
+if not ok or not module or module.api_version() < 11 then return end
+if selection < 0 then return end
+local name = profile
+if type(name) ~= "string" or name == "" then name = module.profile_name(selection, obj.getvalue("合成フォント", "comfont::プロファイル選択")) end
+if not name then return end
+local function value(item) return obj.getvalue("テキスト", item) end
+local function enabled(item)
+    local v = value(item)
+    return v == true or v == 1 or v == "1"
+end
+-- Non-destructive renderer currently supports horizontal, non-scrolling text.
+-- Unsupported objects retain the host's original image.
+if obj.num ~= 1 or enabled("文字毎に個別オブジェクト") or enabled("自動スクロール")
+    or enabled("移動座標上に表示") or (tonumber(value("表示速度")) or 0) ~= 0 then return end
+local alignments = {
+    ["左寄せ[上]"] = 0, ["中央揃え[上]"] = 1, ["右寄せ[上]"] = 2,
+    ["左寄せ[中]"] = 3, ["中央揃え[中]"] = 4, ["右寄せ[中]"] = 5,
+    ["左寄せ[下]"] = 6, ["中央揃え[下]"] = 7, ["右寄せ[下]"] = 8,
+}
+local align = alignments[value("文字揃え")]
+local decoration = value("文字装飾")
+if align == nil or (decoration and decoration ~= "標準文字") then return end
+local text, font = value("テキスト"), value("フォント")
+if type(text) ~= "string" or type(font) ~= "string" then return end
+local size = tonumber(value("サイズ"))
+if not size then return end
+local rendered, image = pcall(module.render_text, text, name, font, size,
+    tonumber(value("字間")) or 0, tonumber(value("行間")) or 0,
+    value("文字色") or "ffffff", align, enabled("B"), enabled("I"))
+if not rendered or not image then return end
+-- Keep the owning userdata alive until the synchronous upload has completed.
+obj.putpixeldata("object", image.data, image.width, image.height, "bgra")
+obj.cx = (align % 3 - 1) * image.width / 2
+obj.cy = (math.floor(align / 3) - 1) * image.height / 2

@@ -1,6 +1,6 @@
 use compositefont_core::{
     CharacterClass, CompositeFontProfile, DEFAULT_PROFILE_NAME, FontAdjustment, MetricUnit,
-    ProfileDocument,
+    ProfileDocument, UnicodeRange,
 };
 
 pub const CATEGORY_ROWS: [CategoryRow; 7] = [
@@ -88,12 +88,14 @@ impl EditorModel {
         for profile in &mut document.profiles {
             migrate_legacy_kanji_fallbacks(profile);
         }
-        Self {
+        let mut model = Self {
             document,
             selected_profile: 0,
             selected_category: 0,
             selected_fallback: None,
-        }
+        };
+        model.select_table_row(0);
+        model
     }
 
     pub fn document(&self) -> &ProfileDocument {
@@ -104,6 +106,7 @@ impl EditorModel {
         self.selected_profile
     }
 
+    #[cfg(test)]
     pub fn selected_category_index(&self) -> usize {
         self.selected_category
     }
@@ -122,12 +125,9 @@ impl EditorModel {
     }
 
     pub fn selected_adjustment(&self) -> &FontAdjustment {
-        let class = CATEGORY_ROWS[self.selected_category].class;
-        if let Some(index) = self.selected_fallback {
-            &self.selected_profile().fallbacks_for(class)[index]
-        } else {
-            self.selected_profile().adjustment_for(class)
-        }
+        static NEUTRAL: std::sync::OnceLock<FontAdjustment> = std::sync::OnceLock::new();
+        self.adjustment_for_table_row(self.selected_table_row())
+            .unwrap_or_else(|| NEUTRAL.get_or_init(FontAdjustment::neutral))
     }
 
     pub fn select_profile(&mut self, index: usize) -> bool {
@@ -135,10 +135,13 @@ impl EditorModel {
             return false;
         }
         self.selected_profile = index;
+        self.selected_category = 0;
         self.selected_fallback = None;
+        self.select_table_row(0);
         true
     }
 
+    #[cfg(test)]
     pub fn select_category(&mut self, index: usize) -> bool {
         if index >= CATEGORY_ROWS.len() {
             return false;
@@ -148,153 +151,180 @@ impl EditorModel {
         true
     }
 
-    pub fn select_fallback(&mut self, category: usize, index: usize) -> bool {
-        let Some(row) = CATEGORY_ROWS.get(category) else {
-            return false;
-        };
-        if index >= self.selected_profile().fallbacks_for(row.class).len() {
-            return false;
-        }
-        self.selected_category = category;
-        self.selected_fallback = Some(index);
-        true
-    }
-
     pub fn add_selected_adjustment(&mut self) {
-        let category = self.selected_category;
-        let class = CATEGORY_ROWS[category].class;
+        if self.selected_category >= CATEGORY_ROWS.len() {
+            let mut range = self.selected_profile().custom_ranges
+                [self.selected_category - CATEGORY_ROWS.len()]
+            .clone();
+            range.name.push_str(" (コピー)");
+            self.selected_profile_mut().custom_ranges.push(range);
+            self.selected_category =
+                CATEGORY_ROWS.len() + self.selected_profile().custom_ranges.len() - 1;
+            return;
+        }
+        let class = CATEGORY_ROWS[self.selected_category].class;
+        if !self.selected_profile().class_enabled(class) {
+            self.restore_category(self.selected_category);
+            return;
+        }
         let mut adjustment = self.selected_adjustment().clone();
         adjustment.font_family.clear();
         adjustment.fallback_font_families.clear();
         self.selected_profile_mut()
             .fallbacks_for_mut(class)
             .push(adjustment);
-        self.selected_category = category;
         self.selected_fallback = Some(self.selected_profile().fallbacks_for(class).len() - 1);
+    }
+
+    #[cfg(any(test, feature = "egui-ui"))]
+    pub fn copy_selected_adjustment(&mut self) -> bool {
+        let Some(adjustment) = self
+            .adjustment_for_table_row(self.selected_table_row())
+            .cloned()
+        else {
+            return false;
+        };
+        self.add_selected_adjustment();
+        if let Some((category, Some(index))) = self.table_row_target(self.selected_table_row()) {
+            let class = CATEGORY_ROWS[category].class;
+            self.selected_profile_mut().fallbacks_for_mut(class)[index] = adjustment;
+        }
+        true
     }
 
     pub fn remove_adjustments_for_table_rows(&mut self, rows: &[usize]) -> usize {
         let mut targets = rows
             .iter()
             .filter_map(|&row| self.table_row_target(row))
-            .filter_map(|(category, fallback)| fallback.map(|index| (category, index)))
             .collect::<Vec<_>>();
         targets.sort_unstable();
         targets.dedup();
         let removed = targets.len();
-        let selected_category = targets
-            .first()
-            .map(|(category, _)| *category)
-            .unwrap_or(self.selected_category);
-        for (category, index) in targets.into_iter().rev() {
+        for (category, fallback) in targets.into_iter().rev() {
+            if category >= CATEGORY_ROWS.len() {
+                self.selected_profile_mut()
+                    .custom_ranges
+                    .remove(category - CATEGORY_ROWS.len());
+                continue;
+            }
             let class = CATEGORY_ROWS[category].class;
-            self.selected_profile_mut()
-                .fallbacks_for_mut(class)
-                .remove(index);
+            let profile = self.selected_profile_mut();
+            if let Some(index) = fallback {
+                profile.fallbacks_for_mut(class).remove(index);
+            } else if !profile.fallbacks_for(class).is_empty() {
+                let next = profile.fallbacks_for_mut(class).remove(0);
+                *profile.adjustment_for_mut(class) = next;
+            } else {
+                *profile.adjustment_for_mut(class) = FontAdjustment::neutral();
+                profile.disabled_classes.push(class);
+            }
         }
-        if removed > 0 {
-            self.selected_fallback = None;
-            self.selected_category = selected_category;
-        }
+        self.selected_category = 0;
+        self.selected_fallback = None;
+        self.select_table_row(0);
         removed
     }
 
     pub fn can_move_table_rows(&self, rows: &[usize], direction: RowMoveDirection) -> bool {
-        self.selected_row_flags(rows)
-            .into_iter()
-            .any(|selected| match direction {
-                RowMoveDirection::Up => {
-                    (1..selected.len()).any(|index| selected[index] && !selected[index - 1])
-                }
-                RowMoveDirection::Down => (0..selected.len().saturating_sub(1))
-                    .any(|index| selected[index] && !selected[index + 1]),
+        let targets = self.table_targets();
+        rows.iter().any(|&row| {
+            if row >= targets.len() {
+                return false;
+            }
+            let adjacent = match direction {
+                RowMoveDirection::Up => row.checked_sub(1),
+                RowMoveDirection::Down => row.checked_add(1),
+            };
+            adjacent.is_some_and(|next| {
+                next < targets.len()
+                    && !rows.contains(&next)
+                    && Self::same_move_group(targets[row], targets[next])
             })
+        })
+    }
+    fn same_move_group(a: (usize, Option<usize>), b: (usize, Option<usize>)) -> bool {
+        a.0 == b.0 || (a.0 >= CATEGORY_ROWS.len() && b.0 >= CATEGORY_ROWS.len())
+    }
+    fn swap_table_rows(&mut self, a: usize, b: usize) {
+        let targets = self.table_targets();
+        let (ac, af) = targets[a];
+        let (bc, bf) = targets[b];
+        if ac >= CATEGORY_ROWS.len() {
+            self.selected_profile_mut()
+                .custom_ranges
+                .swap(ac - CATEGORY_ROWS.len(), bc - CATEGORY_ROWS.len());
+            return;
+        }
+        let class = CATEGORY_ROWS[ac].class;
+        let first = self.adjustment_for_table_row(a).unwrap().clone();
+        let second = self.adjustment_for_table_row(b).unwrap().clone();
+        let profile = self.selected_profile_mut();
+        match af {
+            None => *profile.adjustment_for_mut(class) = second,
+            Some(index) => profile.fallbacks_for_mut(class)[index] = second,
+        }
+        match bf {
+            None => *profile.adjustment_for_mut(class) = first,
+            Some(index) => profile.fallbacks_for_mut(class)[index] = first,
+        }
     }
 
     pub fn move_table_rows(&mut self, rows: &[usize], direction: RowMoveDirection) -> Vec<usize> {
-        let mut selected_by_category = self.selected_row_flags(rows);
-        let mut moved = false;
-
-        for (category, selected) in selected_by_category.iter_mut().enumerate() {
-            let class = CATEGORY_ROWS[category].class;
-            let mut adjustments = std::iter::once(self.selected_profile().adjustment_for(class))
-                .chain(self.selected_profile().fallbacks_for(class))
-                .cloned()
-                .collect::<Vec<_>>();
-            let mut group_moved = false;
-            match direction {
-                RowMoveDirection::Up => {
-                    for index in 1..selected.len() {
-                        if selected[index] && !selected[index - 1] {
-                            adjustments.swap(index, index - 1);
-                            selected.swap(index, index - 1);
-                            group_moved = true;
-                        }
-                    }
-                }
-                RowMoveDirection::Down => {
-                    for index in (0..selected.len().saturating_sub(1)).rev() {
-                        if selected[index] && !selected[index + 1] {
-                            adjustments.swap(index, index + 1);
-                            selected.swap(index, index + 1);
-                            group_moved = true;
-                        }
-                    }
-                }
-            }
-            if group_moved {
-                let profile = self.selected_profile_mut();
-                *profile.adjustment_for_mut(class) = adjustments.remove(0);
-                *profile.fallbacks_for_mut(class) = adjustments;
-                moved = true;
+        let targets = self.table_targets();
+        let mut flags = (0..targets.len())
+            .map(|row| rows.contains(&row))
+            .collect::<Vec<_>>();
+        let indices: Vec<usize> = match direction {
+            RowMoveDirection::Up => (1..flags.len()).collect(),
+            RowMoveDirection::Down => (0..flags.len().saturating_sub(1)).rev().collect(),
+        };
+        for index in indices {
+            let next = match direction {
+                RowMoveDirection::Up => index - 1,
+                RowMoveDirection::Down => index + 1,
+            };
+            if flags[index] && !flags[next] && Self::same_move_group(targets[index], targets[next])
+            {
+                self.swap_table_rows(index, next);
+                flags.swap(index, next);
             }
         }
-
-        if !moved {
-            return rows.to_vec();
+        let selected = flags
+            .iter()
+            .enumerate()
+            .filter_map(|(index, flag)| flag.then_some(index))
+            .collect::<Vec<_>>();
+        if let Some(&row) = selected.first() {
+            self.select_table_row(row);
         }
-
-        let mut moved_rows = Vec::new();
-        let mut first_row = 0;
-        for (category, selected) in selected_by_category.iter().enumerate() {
-            moved_rows.extend(
-                selected
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, selected)| **selected)
-                    .map(|(index, _)| first_row + index),
-            );
-            first_row += 1 + self
-                .selected_profile()
-                .fallbacks_for(CATEGORY_ROWS[category].class)
-                .len();
-        }
-        if let Some(&first) = moved_rows.first() {
-            self.select_table_row(first);
-        }
-        moved_rows
+        selected
     }
 
     pub fn selected_table_row(&self) -> usize {
-        let preceding_rows = CATEGORY_ROWS[..self.selected_category]
+        self.table_targets()
             .iter()
-            .map(|row| 1 + self.selected_profile().fallbacks_for(row.class).len())
-            .sum::<usize>();
-        preceding_rows + self.selected_fallback.map_or(0, |index| index + 1)
+            .position(|&(category, fallback)| {
+                category == self.selected_category && fallback == self.selected_fallback
+            })
+            .unwrap_or(0)
     }
 
     pub fn select_table_row(&mut self, table_row: usize) -> bool {
         let Some((category, fallback)) = self.table_row_target(table_row) else {
             return false;
         };
-        match fallback {
-            Some(index) => self.select_fallback(category, index),
-            None => self.select_category(category),
-        }
+        self.selected_category = category;
+        self.selected_fallback = fallback;
+        true
     }
 
     pub fn adjustment_for_table_row(&self, table_row: usize) -> Option<&FontAdjustment> {
         let (category, fallback) = self.table_row_target(table_row)?;
+        if category >= CATEGORY_ROWS.len() {
+            return Some(
+                &self.selected_profile().custom_ranges[category - CATEGORY_ROWS.len()].adjustment,
+            );
+        }
         let class = CATEGORY_ROWS[category].class;
         match fallback {
             Some(index) => self.selected_profile().fallbacks_for(class).get(index),
@@ -302,37 +332,82 @@ impl EditorModel {
         }
     }
 
-    pub fn is_additional_table_row(&self, table_row: usize) -> bool {
-        self.table_row_target(table_row)
-            .is_some_and(|(_, fallback)| fallback.is_some())
-    }
-
     fn table_row_target(&self, table_row: usize) -> Option<(usize, Option<usize>)> {
-        let mut first_row = 0;
-        for (category, row) in CATEGORY_ROWS.iter().enumerate() {
-            let fallback_count = self.selected_profile().fallbacks_for(row.class).len();
-            if table_row == first_row {
-                return Some((category, None));
-            }
-            if table_row <= first_row + fallback_count {
-                return Some((category, Some(table_row - first_row - 1)));
-            }
-            first_row += 1 + fallback_count;
-        }
-        None
+        self.table_targets().get(table_row).copied()
     }
 
-    fn selected_row_flags(&self, rows: &[usize]) -> Vec<Vec<bool>> {
-        let mut selected = CATEGORY_ROWS
-            .iter()
-            .map(|row| vec![false; 1 + self.selected_profile().fallbacks_for(row.class).len()])
-            .collect::<Vec<_>>();
-        for &row in rows {
-            if let Some((category, fallback)) = self.table_row_target(row) {
-                selected[category][fallback.map_or(0, |index| index + 1)] = true;
+    fn table_targets(&self) -> Vec<(usize, Option<usize>)> {
+        let mut targets = Vec::new();
+        for (category, row) in CATEGORY_ROWS.iter().enumerate() {
+            if !self.selected_profile().class_enabled(row.class) {
+                continue;
             }
+            targets.push((category, None));
+            targets.extend(
+                (0..self.selected_profile().fallbacks_for(row.class).len())
+                    .map(|index| (category, Some(index))),
+            );
         }
-        selected
+        targets.extend(
+            (0..self.selected_profile().custom_ranges.len())
+                .map(|index| (CATEGORY_ROWS.len() + index, None)),
+        );
+        targets
+    }
+
+    pub fn table_row_count(&self) -> usize {
+        self.table_targets().len()
+    }
+    pub fn table_row_label(&self, row: usize) -> String {
+        let Some((category, _)) = self.table_row_target(row) else {
+            return "範囲なし".to_owned();
+        };
+        if category < CATEGORY_ROWS.len() {
+            CATEGORY_ROWS[category].label.to_owned()
+        } else {
+            let range = &self.selected_profile().custom_ranges[category - CATEGORY_ROWS.len()];
+            format!("{} U+{:04X}–{:04X}", range.name, range.start, range.end)
+        }
+    }
+    pub fn selected_range(&self) -> Option<&UnicodeRange> {
+        self.selected_category
+            .checked_sub(CATEGORY_ROWS.len())
+            .and_then(|index| self.selected_profile().custom_ranges.get(index))
+    }
+    pub fn add_range(&mut self, name: String, start: u32, end: u32) -> Result<(), String> {
+        let range = UnicodeRange {
+            name,
+            start,
+            end,
+            adjustment: FontAdjustment::neutral(),
+        };
+        range.validate()?;
+        self.selected_profile_mut().custom_ranges.push(range);
+        self.selected_category =
+            CATEGORY_ROWS.len() + self.selected_profile().custom_ranges.len() - 1;
+        self.selected_fallback = None;
+        Ok(())
+    }
+    pub fn update_selected_range(&mut self, start: u32, end: u32) -> Result<(), String> {
+        let Some(index) = self.selected_category.checked_sub(CATEGORY_ROWS.len()) else {
+            return Ok(());
+        };
+        let mut range = self.selected_profile().custom_ranges[index].clone();
+        range.start = start;
+        range.end = end;
+        range.validate()?;
+        self.selected_profile_mut().custom_ranges[index] = range;
+        Ok(())
+    }
+    pub fn restore_category(&mut self, index: usize) {
+        let Some(row) = CATEGORY_ROWS.get(index) else {
+            return;
+        };
+        self.selected_profile_mut()
+            .disabled_classes
+            .retain(|&class| class != row.class);
+        self.selected_category = index;
+        self.selected_fallback = None;
     }
 
     pub fn create_profile(&mut self) {
@@ -420,6 +495,11 @@ impl EditorModel {
             let Some((category, fallback)) = self.table_row_target(row) else {
                 continue;
             };
+            if category >= CATEGORY_ROWS.len() {
+                self.selected_profile_mut().custom_ranges[category - CATEGORY_ROWS.len()]
+                    .adjustment = adjustment.clone();
+                continue;
+            }
             let class = CATEGORY_ROWS[category].class;
             let profile = self.selected_profile_mut();
             let target = match fallback {
@@ -823,5 +903,73 @@ mod tests {
                 assert_ne!(MIXED_PREVIEW_SAMPLES[previous].class, sample.class);
             }
         }
+    }
+
+    #[test]
+    fn copies_fonts_metrics_and_ranges_without_changing_the_source() {
+        let mut model = EditorModel::new(ProfileDocument::with_builtin_default());
+        model
+            .update_table_rows(
+                &[0],
+                "Yu Gothic UI".into(),
+                MetricUnit::Pixels,
+                42.0,
+                3.0,
+                2.0,
+                90.0,
+                110.0,
+            )
+            .unwrap();
+        let original = model.selected_adjustment().clone();
+        assert!(model.copy_selected_adjustment());
+        assert_eq!(model.selected_adjustment(), &original);
+        assert_eq!(model.selected_profile().kanji, original);
+        model.add_range("Latin".into(), 0x41, 0x5a).unwrap();
+        assert!(model.copy_selected_adjustment());
+        let ranges = &model.selected_profile().custom_ranges;
+        assert_eq!(ranges.len(), 2);
+        assert_eq!((ranges[1].start, ranges[1].end), (0x41, 0x5a));
+        assert_eq!(ranges[1].adjustment, ranges[0].adjustment);
+        model.remove_adjustments_for_table_rows(&(0..model.table_row_count()).collect::<Vec<_>>());
+        assert!(!model.copy_selected_adjustment());
+        assert_eq!(model.table_row_count(), 0);
+    }
+
+    #[test]
+    fn deletes_all_fixed_and_custom_rows_and_can_restore_them() {
+        let mut model = EditorModel::new(ProfileDocument::with_builtin_default());
+        model.add_range("all".to_owned(), 0, 0x10FFFF).unwrap();
+        let count = model.table_row_count();
+        assert_eq!(
+            model.remove_adjustments_for_table_rows(&(0..count).collect::<Vec<_>>()),
+            count
+        );
+        assert_eq!(model.table_row_count(), 0);
+        assert_eq!(model.selected_adjustment(), &FontAdjustment::neutral());
+        for ch in ['A', 'あ', '漢', '😀'] {
+            assert_eq!(model.selected_profile().resolve(ch).font_family, "");
+        }
+        let json = serde_json::to_string(model.document()).unwrap();
+        let loaded = EditorModel::new(serde_json::from_str(&json).unwrap());
+        assert_eq!(loaded.table_row_count(), 0);
+        model.restore_category(1);
+        assert_eq!(model.table_row_count(), 1);
+        assert_eq!(model.selected_table_row(), 0);
+        assert!(!model.can_move_table_rows(&[99], RowMoveDirection::Down));
+        assert!(!model.can_move_table_rows(&[1], RowMoveDirection::Up));
+    }
+    #[test]
+    fn deletes_primary_promotes_fallback_and_reorders_custom_ranges() {
+        let mut model = EditorModel::new(ProfileDocument::with_builtin_default());
+        model.add_selected_adjustment();
+        model.selected_profile_mut().kanji_fallbacks[0].font_family = "Fallback".to_owned();
+        model.remove_adjustments_for_table_rows(&[0]);
+        assert_eq!(model.selected_profile().kanji.font_family, "Fallback");
+        model.add_range("first".to_owned(), 0x41, 0x5A).unwrap();
+        model.add_range("second".to_owned(), 0x41, 0x5A).unwrap();
+        let row = model.selected_table_row();
+        assert!(model.can_move_table_rows(&[row], RowMoveDirection::Up));
+        model.move_table_rows(&[row], RowMoveDirection::Up);
+        assert_eq!(model.selected_profile().custom_ranges[0].name, "second");
     }
 }

@@ -1,6 +1,5 @@
 use std::{
     cell::RefCell,
-    collections::HashMap,
     ffi::c_void,
     mem::size_of,
     path::PathBuf,
@@ -8,23 +7,19 @@ use std::{
 };
 
 use aviutl2::generic::EditHandle;
-use compositefont_core::{MetricUnit, ProfileDocument};
+use compositefont_core::{MetricUnit, ProfileDocument, UNICODE_PRESETS, parse_codepoint};
 use windows::{
     Win32::{
-        Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM},
+        Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
         Graphics::Dwm::{
             DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR,
             DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute,
         },
         Graphics::Gdi::{
-            BeginPaint, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateFontW, CreatePen,
-            CreateSolidBrush, DEFAULT_CHARSET, DEFAULT_GUI_FONT, DEFAULT_PITCH, DT_END_ELLIPSIS,
-            DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DeleteObject, DrawTextW, EndPaint,
-            FIXED, FW_NORMAL, FillRect, GDI_ERROR, GGO_METRICS, GLYPHMETRICS, GM_ADVANCED, GetDC,
-            GetGlyphOutlineW, GetStockObject, GetTextExtentPoint32W, GetTextMetricsW, HBRUSH, HDC,
-            HGDIOBJ, InvalidateRect, LineTo, MAT2, MoveToEx, OUT_DEFAULT_PRECIS, PAINTSTRUCT,
-            PS_SOLID, ReleaseDC, SelectObject, SetBkColor, SetBkMode, SetGraphicsMode,
-            SetTextColor, SetWorldTransform, TEXTMETRICW, TRANSPARENT, TextOutW, XFORM,
+            BeginPaint, CreateSolidBrush, DEFAULT_GUI_FONT, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX,
+            DT_SINGLELINE, DT_VCENTER, DrawTextW, EndPaint, FillRect, GetDC, GetStockObject,
+            HBRUSH, HDC, HGDIOBJ, InvalidateRect, PAINTSTRUCT, ReleaseDC, SelectObject, SetBkColor,
+            SetBkMode, SetTextColor, TRANSPARENT,
         },
         System::LibraryLoader::GetModuleHandleW,
         UI::{
@@ -70,7 +65,7 @@ use windows::{
 use crate::{
     font_collection::{self, FontRegistrationState, FontStageOutcome},
     model::{CATEGORY_ROWS, EditorModel, MIXED_PREVIEW_SAMPLES, RowMoveDirection},
-    storage::save_document,
+    storage::save_document_with_selector as save_document,
 };
 
 const CLASS_NAME: PCWSTR = w!("CompositeFontEditorWindow");
@@ -80,7 +75,6 @@ const WINDOW_HEIGHT: i32 = 790;
 const PREVIEW_WIDTH: i32 = 730;
 const PREVIEW_HEIGHT: i32 = 190;
 const PREVIEW_FONT_HEIGHT: f64 = 32.0;
-const PREVIEW_LINE_HEIGHT: i32 = 54;
 
 const DARK_WINDOW: COLORREF = COLORREF(0x0024_2120);
 const DARK_CONTROL: COLORREF = COLORREF(0x0030_2D2B);
@@ -91,7 +85,6 @@ const DARK_BORDER: COLORREF = COLORREF(0x0056_524F);
 const HEADER_SUBCLASS_ID: usize = 1;
 const ICON_RESOURCE_VERSION: u32 = 0x0003_0000;
 const GUIDE_ICON_SIZE: i32 = 16;
-const PREVIEW_GLYPH_CACHE_LIMIT: usize = 4096;
 
 fn shared_dark_brush(slot: &OnceLock<usize>, color: COLORREF) -> HBRUSH {
     let raw = *slot.get_or_init(|| unsafe { CreateSolidBrush(color).0 as usize });
@@ -186,6 +179,11 @@ const ID_BASELINE_GUIDE: usize = 142;
 const ID_GLYPH_BOUNDS_GUIDE: usize = 143;
 const ID_PREVIEW_CATEGORY_MODE: usize = 144;
 const ID_PREVIEW_MIXED_MODE: usize = 145;
+const ID_RANGE_PRESET: usize = 150;
+const ID_RANGE_START: usize = 151;
+const ID_RANGE_END: usize = 152;
+const ID_RANGE_ADD: usize = 153;
+const ID_CATEGORY_RESTORE: usize = 154;
 const ID_OK: usize = 1;
 const ID_CANCEL: usize = 2;
 
@@ -211,6 +209,9 @@ struct Controls {
     preview_category_mode: HWND,
     preview_mixed_mode: HWND,
     preview: HWND,
+    range_preset: HWND,
+    range_start: HWND,
+    range_end: HWND,
 }
 
 struct DialogContext {
@@ -226,32 +227,7 @@ struct DialogContext {
     show_baseline_guide: bool,
     show_glyph_bounds_guide: bool,
     preview_mode: PreviewMode,
-    preview_glyph_cache: RefCell<HashMap<PreviewGlyphCacheKey, Option<PreviewGlyphMetrics>>>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct PreviewGlyphCacheKey {
-    font_family: String,
-    font_height: i32,
-    horizontal_scale_bits: u64,
-    vertical_scale_bits: u64,
-    character: char,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct PreviewGlyphMetrics {
-    black_box_x: u32,
-    black_box_y: u32,
-    origin_x: i32,
-    origin_y: i32,
-}
-
-#[derive(Clone, Copy)]
-struct PreviewGlyphStyle<'font> {
-    font_family: &'font str,
-    font_height: i32,
-    horizontal_scale: f64,
-    vertical_scale: f64,
+    preview_bitmap: RefCell<Option<compositefont_module::preview::PreviewBitmap>>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -282,7 +258,7 @@ impl DialogContext {
             show_baseline_guide: true,
             show_glyph_bounds_guide: true,
             preview_mode: PreviewMode::Category,
-            preview_glyph_cache: RefCell::new(HashMap::new()),
+            preview_bitmap: RefCell::new(None),
         }
     }
 }
@@ -780,8 +756,8 @@ unsafe fn create_controls(window: HWND, context: &mut DialogContext) -> Result<(
             )),
         );
         for (index, (title, width)) in [
-            ("文字種", 90),
-            ("フォント", 210),
+            ("範囲 / 分類", 190),
+            ("フォント", 110),
             ("サイズ", 70),
             ("ベース", 70),
             ("字送り", 70),
@@ -862,10 +838,10 @@ unsafe fn create_controls(window: HWND, context: &mut DialogContext) -> Result<(
         create_label(
             window,
             instance,
-            "同じ文字種は上から優先",
+            "カスタム範囲優先・重複は上から",
             180,
             254,
-            180,
+            340,
             20,
             0,
             font,
@@ -926,6 +902,71 @@ unsafe fn create_controls(window: HWND, context: &mut DialogContext) -> Result<(
             105,
             26,
             ID_APPLY,
+            font,
+        )?;
+        context.controls.range_preset = create_child(
+            window,
+            instance,
+            w!("COMBOBOX"),
+            "",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(CBS_DROPDOWNLIST as u32),
+            WINDOW_EX_STYLE(0),
+            20,
+            360,
+            200,
+            300,
+            ID_RANGE_PRESET,
+            font,
+        )?;
+        for preset in UNICODE_PRESETS {
+            combo_add(context.controls.range_preset, preset.name);
+        }
+        for category in CATEGORY_ROWS {
+            combo_add(
+                context.controls.range_preset,
+                &format!("分類を復元: {}", category.label),
+            );
+        }
+        SendMessageW(
+            context.controls.range_preset,
+            CB_SETCURSEL,
+            Some(WPARAM(0)),
+            None,
+        );
+        create_label(window, instance, "開始 U+", 230, 363, 65, 20, 0, font)?;
+        context.controls.range_start =
+            create_edit(window, instance, 295, 360, 80, ID_RANGE_START, font)?;
+        create_label(window, instance, "終了 U+", 385, 363, 65, 20, 0, font)?;
+        context.controls.range_end =
+            create_edit(window, instance, 450, 360, 80, ID_RANGE_END, font)?;
+        set_text(context.controls.range_start, "0000");
+        set_text(context.controls.range_end, "007F");
+        create_child(
+            window,
+            instance,
+            w!("BUTTON"),
+            "範囲を追加",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+            WINDOW_EX_STYLE(0),
+            540,
+            359,
+            100,
+            27,
+            ID_RANGE_ADD,
+            font,
+        )?;
+        create_child(
+            window,
+            instance,
+            w!("BUTTON"),
+            "分類を復元",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+            WINDOW_EX_STYLE(0),
+            650,
+            359,
+            100,
+            27,
+            ID_CATEGORY_RESTORE,
             font,
         )?;
         for (text, x, width, id) in [
@@ -1246,6 +1287,43 @@ unsafe fn create_edit(
 
 unsafe fn handle_command(window: HWND, context: &mut DialogContext, id: usize, notification: u32) {
     match (id, notification) {
+        (ID_RANGE_PRESET, CBN_SELCHANGE) => unsafe {
+            let index =
+                SendMessageW(context.controls.range_preset, CB_GETCURSEL, None, None).0 as usize;
+            if let Some(preset) = UNICODE_PRESETS.get(index) {
+                set_text(
+                    context.controls.range_start,
+                    &format!("{:04X}", preset.start),
+                );
+                set_text(context.controls.range_end, &format!("{:04X}", preset.end));
+            }
+        },
+        (ID_RANGE_ADD, BN_CLICKED) => {
+            let result = (|| {
+                let start = parse_codepoint(&unsafe { window_text(context.controls.range_start) })?;
+                let end = parse_codepoint(&unsafe { window_text(context.controls.range_end) })?;
+                let index = unsafe {
+                    SendMessageW(context.controls.range_preset, CB_GETCURSEL, None, None).0 as usize
+                };
+                let name = UNICODE_PRESETS
+                    .get(index)
+                    .map_or("カスタム", |preset| preset.name)
+                    .to_owned();
+                context.model.add_range(name, start, end)
+            })();
+            match result {
+                Ok(()) => unsafe { refresh_all(context) },
+                Err(error) => unsafe { show_error(Some(window), &error) },
+            }
+        }
+        (ID_CATEGORY_RESTORE, BN_CLICKED) => unsafe {
+            let index =
+                SendMessageW(context.controls.range_preset, CB_GETCURSEL, None, None).0 as usize;
+            if let Some(category) = index.checked_sub(UNICODE_PRESETS.len()) {
+                context.model.restore_category(category);
+                refresh_all(context);
+            }
+        },
         (ID_FONT, CBN_DROPDOWN) => unsafe {
             rebuild_font_combo(context);
             configure_font_dropdown(context.controls.font);
@@ -1308,6 +1386,9 @@ unsafe fn handle_command(window: HWND, context: &mut DialogContext, id: usize, n
         (ID_APPLY, BN_CLICKED) => match unsafe { apply_editor_fields(context) } {
             Ok(()) => unsafe {
                 refresh_selected_list_rows(context);
+                if context.model.selected_range().is_some() {
+                    refresh_all(context);
+                }
                 refresh_preview(context);
             },
             Err(error) => unsafe { show_error(Some(window), &error) },
@@ -1401,15 +1482,15 @@ unsafe fn handle_command(window: HWND, context: &mut DialogContext, id: usize, n
 
 fn save_confirmation_message(outcome: &FontStageOutcome) -> String {
     if outcome.source_file_count == 0 {
-        "保存しました。".to_owned()
+        "保存しました。\nanm2の選択肢の更新には再起動が必要です。".to_owned()
     } else if outcome.added_file_count == 0 {
         format!(
-            "保存しました。\n追加フォント{}件は配置済みです。",
+            "保存しました。\n追加フォント{}件は配置済みです。\nanm2の選択肢の更新には再起動が必要です。",
             outcome.existing_file_count
         )
     } else {
         format!(
-            "保存しました。\n追加フォント{}件を配置しました。\n反映にはAviUtl2の再起動が必要です。",
+            "保存しました。\n追加フォント{}件を配置しました。\n追加フォントとanm2の選択肢の反映にはAviUtl2の再起動が必要です。",
             outcome.added_file_count
         )
     }
@@ -1449,7 +1530,7 @@ fn scan_private_fonts_after_save(context: &mut DialogContext) -> Result<FontStag
 
 unsafe fn apply_editor_fields(context: &mut DialogContext) -> Result<(), String> {
     let profile_name = unsafe { window_text(context.controls.profile) };
-    context.model.rename_selected_profile(&profile_name)?;
+
     let font = unsafe { window_text(context.controls.font) };
     let metric_unit = unsafe {
         match SendMessageW(context.controls.unit, CB_GETCURSEL, None, None).0 {
@@ -1475,6 +1556,13 @@ unsafe fn apply_editor_fields(context: &mut DialogContext) -> Result<(), String>
     if rows.is_empty() {
         rows.push(context.model.selected_table_row());
     }
+    let mut candidate = context.model.clone();
+    candidate.rename_selected_profile(&profile_name)?;
+    if candidate.selected_range().is_some() {
+        let start = parse_codepoint(&unsafe { window_text(context.controls.range_start) })?;
+        let end = parse_codepoint(&unsafe { window_text(context.controls.range_end) })?;
+        context.model.update_selected_range(start, end)?;
+    }
     context.model.update_table_rows(
         &rows,
         font,
@@ -1484,7 +1572,9 @@ unsafe fn apply_editor_fields(context: &mut DialogContext) -> Result<(), String>
         tracking,
         vertical_scale,
         horizontal_scale,
-    )
+    )?;
+    context.model = candidate;
+    Ok(())
 }
 
 fn parse_number(text: &str, label: &str) -> Result<f64, String> {
@@ -1521,23 +1611,15 @@ unsafe fn refresh_profile_combo(context: &DialogContext) {
 
 unsafe fn refresh_list(context: &DialogContext) {
     unsafe { SendMessageW(context.controls.list, LVM_DELETEALLITEMS, None, None) };
-    let profile = context.model.selected_profile();
-    let mut row_index = 0;
-    for row in CATEGORY_ROWS {
+    for row_index in 0..context.model.table_row_count() {
+        let adjustment = context.model.adjustment_for_table_row(row_index).unwrap();
         unsafe {
             insert_adjustment_row(
                 context.controls.list,
                 row_index,
-                row.label,
-                profile.adjustment_for(row.class),
+                &context.model.table_row_label(row_index),
+                adjustment,
             );
-        }
-        row_index += 1;
-        for adjustment in profile.fallbacks_for(row.class) {
-            unsafe {
-                insert_adjustment_row(context.controls.list, row_index, row.label, adjustment);
-            }
-            row_index += 1;
         }
     }
     let mut item = LVITEMW {
@@ -1587,11 +1669,20 @@ unsafe fn refresh_selected_list_rows(context: &DialogContext) {
 }
 
 unsafe fn refresh_editor_fields(context: &DialogContext) {
-    let row = CATEGORY_ROWS[context.model.selected_category_index()];
+    let label = context
+        .model
+        .table_row_label(context.model.selected_table_row());
     let adjustment = context.model.selected_adjustment();
     let (size, baseline, tracking) = metric_values(adjustment);
     unsafe {
-        set_text(context.controls.selected_category, row.label);
+        set_text(context.controls.selected_category, &label);
+        if let Some(range) = context.model.selected_range() {
+            set_text(
+                context.controls.range_start,
+                &format!("{:04X}", range.start),
+            );
+            set_text(context.controls.range_end, &format!("{:04X}", range.end));
+        }
         set_text(context.controls.font, &adjustment.font_family);
         SendMessageW(
             context.controls.unit,
@@ -1694,7 +1785,7 @@ unsafe fn refresh_row_action_buttons(context: &DialogContext) {
     }
     let can_remove = rows
         .iter()
-        .any(|&row| context.model.is_additional_table_row(row));
+        .any(|&row| context.model.adjustment_for_table_row(row).is_some());
     let can_move_up = context
         .model
         .can_move_table_rows(&rows, RowMoveDirection::Up);
@@ -1713,8 +1804,45 @@ fn select_table_row(model: &mut EditorModel, row: usize) -> bool {
 }
 
 unsafe fn refresh_preview(context: &DialogContext) {
-    if context.sample_visible && !context.controls.preview.is_invalid() {
-        let _ = unsafe { InvalidateRect(Some(context.controls.preview), None, false) };
+    let sample = match context.preview_mode {
+        PreviewMode::Category => CATEGORY_ROWS
+            .iter()
+            .map(|row| row.sample)
+            .collect::<Vec<_>>()
+            .join(" "),
+        PreviewMode::Mixed => MIXED_PREVIEW_SAMPLES
+            .iter()
+            .map(|sample| {
+                debug_assert!(sample.text.chars().all(|character| {
+                    compositefont_core::classify_character(character) == sample.class
+                }));
+                sample.text
+            })
+            .collect::<String>(),
+    };
+    let profile = context.model.selected_profile().clone();
+    let baseline = context.show_baseline_guide;
+    let bounds = context.show_glyph_bounds_guide;
+    *context.preview_bitmap.borrow_mut() = context
+        .edit_handle
+        .call_read_section(move |section| {
+            compositefont_module::preview::render_preview(
+                section,
+                &profile,
+                &sample,
+                compositefont_module::preview::PreviewOptions {
+                    size: PREVIEW_FONT_HEIGHT,
+                    width: PREVIEW_WIDTH as u32,
+                    height: PREVIEW_HEIGHT as u32,
+                    baseline_guide: baseline,
+                    bounds_guide: bounds,
+                },
+            )
+        })
+        .ok()
+        .and_then(Result::ok);
+    unsafe {
+        let _ = InvalidateRect(Some(context.controls.preview), None, true);
     }
 }
 
@@ -1998,282 +2126,55 @@ unsafe fn paint_preview(window: HWND, context: &DialogContext) {
         SetTextColor(dc, DARK_TEXT);
     }
     if context.sample_visible {
+        if let Some(bitmap) = context.preview_bitmap.borrow().as_ref() {
+            use windows::Win32::Graphics::Gdi::{
+                BI_RGB, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, SetDIBitsToDevice,
+            };
+            let info = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: bitmap.width as i32,
+                    biHeight: -(bitmap.height as i32),
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            unsafe {
+                SetDIBitsToDevice(
+                    dc,
+                    0,
+                    0,
+                    bitmap.width,
+                    bitmap.height,
+                    0,
+                    0,
+                    0,
+                    bitmap.height,
+                    bitmap.bgra.as_ptr().cast(),
+                    &info,
+                    DIB_RGB_COLORS,
+                );
+                let _ = EndPaint(window, &paint);
+            }
+            return;
+        }
+        // Never substitute system GDI fonts when host font resolution fails.
+        let mut message = wide("本体と同じプレビューを作成できませんでした。");
+        let mut rect = paint.rcPaint;
         unsafe {
             SetBkMode(dc, TRANSPARENT);
-            SetGraphicsMode(dc, GM_ADVANCED);
-        }
-        let baseline_pen = unsafe { CreatePen(PS_SOLID, 1, COLORREF(0x0000_40E0)) };
-        let glyph_pen = unsafe { CreatePen(PS_SOLID, 1, COLORREF(0x00C0_C000)) };
-        let old_pen = unsafe { SelectObject(dc, HGDIOBJ(baseline_pen.0)) };
-        let profile = context.model.selected_profile();
-        let mut glyph_cache = context.preview_glyph_cache.borrow_mut();
-        let mut x = 15;
-        let mut baseline = PREVIEW_FONT_HEIGHT.round() as i32 + 14;
-        let preview_runs = match context.preview_mode {
-            PreviewMode::Category => CATEGORY_ROWS
-                .iter()
-                .map(|row| (row.class, row.sample))
-                .collect::<Vec<_>>(),
-            PreviewMode::Mixed => MIXED_PREVIEW_SAMPLES
-                .iter()
-                .map(|sample| (sample.class, sample.text))
-                .collect::<Vec<_>>(),
-        };
-        for (class, sample) in preview_runs {
-            let adjustment = profile.adjustment_for(class);
-            let metrics = adjustment
-                .effective_metrics(Some(PREVIEW_FONT_HEIGHT))
-                .unwrap_or_default();
-            let height = (PREVIEW_FONT_HEIGHT * metrics.size_ratio.clamp(0.5, 2.0)).round() as i32;
-            let family_name = if adjustment.font_family.is_empty() {
-                "Yu Gothic UI"
-            } else {
-                &adjustment.font_family
-            };
-            let family = wide(family_name);
-            let font = unsafe {
-                CreateFontW(
-                    -height,
-                    0,
-                    0,
-                    0,
-                    FW_NORMAL.0 as i32,
-                    0,
-                    0,
-                    0,
-                    DEFAULT_CHARSET,
-                    OUT_DEFAULT_PRECIS,
-                    CLIP_DEFAULT_PRECIS,
-                    CLEARTYPE_QUALITY,
-                    DEFAULT_PITCH.0 as u32,
-                    PCWSTR(family.as_ptr()),
-                )
-            };
-            let old = unsafe { SelectObject(dc, HGDIOBJ(font.0)) };
-            let tracking = (metrics.tracking_adjust_em * PREVIEW_FONT_HEIGHT).round() as i32;
-            let run_width = unsafe { measure_preview_run(dc, sample, tracking) };
-            let horizontal_scale = adjustment.horizontal_scale_ratio.clamp(0.01, 10.0);
-            let vertical_scale = adjustment.vertical_scale_ratio.clamp(0.01, 10.0);
-            let rendered_width = (run_width as f64 * horizontal_scale).round() as i32;
-            if x + rendered_width > PREVIEW_WIDTH - 20 {
-                x = 15;
-                baseline += PREVIEW_LINE_HEIGHT;
-            }
-            let baseline_shift = (metrics.baseline_shift_em * PREVIEW_FONT_HEIGHT).round() as i32;
-            let mut text_metrics = TEXTMETRICW::default();
-            let _ = unsafe { GetTextMetricsW(dc, &mut text_metrics) };
-            let (draw_y, baseline_y) =
-                preview_vertical_positions(baseline, text_metrics.tmAscent, baseline_shift);
-            let transform = scale_about(
-                x,
-                baseline_y,
-                horizontal_scale as f32,
-                vertical_scale as f32,
-            );
-            unsafe {
-                let _ = SetWorldTransform(dc, &transform);
-                draw_preview_run(
-                    dc,
-                    sample,
-                    x,
-                    draw_y,
-                    baseline_y,
-                    run_width,
-                    tracking,
-                    HGDIOBJ(baseline_pen.0),
-                    HGDIOBJ(glyph_pen.0),
-                    context.show_baseline_guide,
-                    context.show_glyph_bounds_guide,
-                    PreviewGlyphStyle {
-                        font_family: family_name,
-                        font_height: height,
-                        horizontal_scale,
-                        vertical_scale,
-                    },
-                    &mut glyph_cache,
-                );
-                let _ = SetWorldTransform(
-                    dc,
-                    &XFORM {
-                        eM11: 1.0,
-                        eM22: 1.0,
-                        ..Default::default()
-                    },
-                );
-                SelectObject(dc, old);
-                let _ = DeleteObject(HGDIOBJ(font.0));
-            }
-            x += rendered_width + preview_run_gap(context.preview_mode, tracking, horizontal_scale);
-        }
-        unsafe {
-            SelectObject(dc, old_pen);
-            let _ = DeleteObject(HGDIOBJ(baseline_pen.0));
-            let _ = DeleteObject(HGDIOBJ(glyph_pen.0));
+            DrawTextW(dc, &mut message, &mut rect, DT_LEFT | DT_NOPREFIX);
         }
     }
     let _ = unsafe { EndPaint(window, &paint) };
 }
 
-fn preview_vertical_positions(
-    nominal_baseline: i32,
-    font_ascent: i32,
-    baseline_shift: i32,
-) -> (i32, i32) {
-    let baseline_y = nominal_baseline - baseline_shift;
-    (baseline_y - font_ascent, baseline_y)
-}
-
-fn preview_run_gap(mode: PreviewMode, tracking: i32, horizontal_scale: f64) -> i32 {
-    match mode {
-        PreviewMode::Category => 22,
-        PreviewMode::Mixed => (tracking as f64 * horizontal_scale).round() as i32,
-    }
-}
-
-fn scale_about(x: i32, y: i32, horizontal: f32, vertical: f32) -> XFORM {
-    XFORM {
-        eM11: horizontal,
-        eM22: vertical,
-        eDx: x as f32 * (1.0 - horizontal),
-        eDy: y as f32 * (1.0 - vertical),
-        ..Default::default()
-    }
-}
-
-unsafe fn measure_preview_run(dc: HDC, text: &str, tracking: i32) -> i32 {
-    let mut advances = Vec::with_capacity(text.chars().count());
-    for character in text.chars() {
-        let mut buffer = [0; 2];
-        let encoded = character.encode_utf16(&mut buffer);
-        let mut extent = SIZE::default();
-        let _ = unsafe { GetTextExtentPoint32W(dc, encoded, &mut extent) };
-        advances.push(extent.cx);
-    }
-    tracked_run_width(&advances, tracking)
-}
-
-fn tracked_run_width(advances: &[i32], tracking: i32) -> i32 {
-    advances.iter().sum::<i32>() + tracking * advances.len().saturating_sub(1) as i32
-}
-
-#[allow(clippy::too_many_arguments)]
-unsafe fn draw_preview_run(
-    dc: HDC,
-    text: &str,
-    x: i32,
-    draw_y: i32,
-    baseline_y: i32,
-    width: i32,
-    tracking: i32,
-    baseline_pen: HGDIOBJ,
-    glyph_pen: HGDIOBJ,
-    show_baseline: bool,
-    show_glyph_bounds: bool,
-    glyph_style: PreviewGlyphStyle<'_>,
-    glyph_cache: &mut HashMap<PreviewGlyphCacheKey, Option<PreviewGlyphMetrics>>,
-) {
-    if show_baseline {
-        unsafe {
-            SelectObject(dc, baseline_pen);
-            draw_line(dc, x, baseline_y, x + width, baseline_y);
-        }
-    }
-    if show_glyph_bounds {
-        unsafe {
-            SelectObject(dc, glyph_pen);
-        }
-    }
-
-    let mut cursor_x = x;
-    let character_count = text.chars().count();
-    for (index, character) in text.chars().enumerate() {
-        let mut buffer = [0; 2];
-        let encoded = character.encode_utf16(&mut buffer);
-        let mut character_extent = SIZE::default();
-        let _ = unsafe { GetTextExtentPoint32W(dc, encoded, &mut character_extent) };
-        let _ = unsafe { TextOutW(dc, cursor_x, draw_y, encoded) };
-
-        if show_glyph_bounds
-            && character as u32 <= u16::MAX as u32
-            && let Some(glyph) =
-                unsafe { cached_preview_glyph_metrics(dc, character, glyph_style, glyph_cache) }
-        {
-            let left = cursor_x + glyph.origin_x;
-            let top = baseline_y - glyph.origin_y;
-            let right = left + glyph.black_box_x as i32;
-            let bottom = top + glyph.black_box_y as i32;
-            unsafe { draw_box(dc, left, top, right, bottom) };
-        }
-        cursor_x += character_extent.cx;
-        if index + 1 < character_count {
-            cursor_x += tracking;
-        }
-    }
-}
-
-unsafe fn cached_preview_glyph_metrics(
-    dc: HDC,
-    character: char,
-    style: PreviewGlyphStyle<'_>,
-    cache: &mut HashMap<PreviewGlyphCacheKey, Option<PreviewGlyphMetrics>>,
-) -> Option<PreviewGlyphMetrics> {
-    let key = PreviewGlyphCacheKey {
-        font_family: style.font_family.to_owned(),
-        font_height: style.font_height,
-        horizontal_scale_bits: style.horizontal_scale.to_bits(),
-        vertical_scale_bits: style.vertical_scale.to_bits(),
-        character,
-    };
-    if let Some(metrics) = cache.get(&key) {
-        return *metrics;
-    }
-
-    let identity = MAT2 {
-        eM11: FIXED { value: 1, fract: 0 },
-        eM12: FIXED::default(),
-        eM21: FIXED::default(),
-        eM22: FIXED { value: 1, fract: 0 },
-    };
-    let mut glyph = GLYPHMETRICS::default();
-    let result = unsafe {
-        GetGlyphOutlineW(
-            dc,
-            character as u32,
-            GGO_METRICS,
-            &mut glyph,
-            0,
-            None,
-            &identity,
-        )
-    };
-    let metrics = (result != GDI_ERROR as u32 && glyph.gmBlackBoxX > 0 && glyph.gmBlackBoxY > 0)
-        .then_some(PreviewGlyphMetrics {
-            black_box_x: glyph.gmBlackBoxX,
-            black_box_y: glyph.gmBlackBoxY,
-            origin_x: glyph.gmptGlyphOrigin.x,
-            origin_y: glyph.gmptGlyphOrigin.y,
-        });
-
-    if cache.len() >= PREVIEW_GLYPH_CACHE_LIMIT {
-        cache.clear();
-    }
-    cache.insert(key, metrics);
-    metrics
-}
-
-unsafe fn draw_box(dc: HDC, left: i32, top: i32, right: i32, bottom: i32) {
+pub(crate) fn report_error(error: &str) {
     unsafe {
-        draw_line(dc, left, top, right, top);
-        draw_line(dc, right, top, right, bottom);
-        draw_line(dc, right, bottom, left, bottom);
-        draw_line(dc, left, bottom, left, top);
-    }
-}
-
-unsafe fn draw_line(dc: HDC, from_x: i32, from_y: i32, to_x: i32, to_y: i32) {
-    unsafe {
-        let _ = MoveToEx(dc, from_x, from_y, None);
-        let _ = LineTo(dc, to_x, to_y);
+        show_error(None, error);
     }
 }
 
@@ -2335,9 +2236,8 @@ fn wide(value: &str) -> Vec<u16> {
 #[cfg(test)]
 mod tests {
     use super::{
-        PreviewMode, normalize_font_names, numeric_wheel_value, preview_run_gap,
-        preview_vertical_positions, save_confirmation_message, scale_about, select_table_row,
-        tracked_run_width, wheel_target_top,
+        normalize_font_names, numeric_wheel_value, save_confirmation_message, select_table_row,
+        wheel_target_top,
     };
     use crate::{font_collection::FontStageOutcome, model::EditorModel};
     use compositefont_core::ProfileDocument;
@@ -2378,7 +2278,7 @@ mod tests {
     fn save_message_is_concise_and_reports_font_staging() {
         assert_eq!(
             save_confirmation_message(&FontStageOutcome::default()),
-            "保存しました。"
+            "保存しました。\nanm2の選択肢の更新には再起動が必要です。"
         );
         assert_eq!(
             save_confirmation_message(&FontStageOutcome {
@@ -2386,7 +2286,7 @@ mod tests {
                 added_file_count: 0,
                 existing_file_count: 2,
             }),
-            "保存しました。\n追加フォント2件は配置済みです。"
+            "保存しました。\n追加フォント2件は配置済みです。\nanm2の選択肢の更新には再起動が必要です。"
         );
         assert_eq!(
             save_confirmation_message(&FontStageOutcome {
@@ -2394,48 +2294,8 @@ mod tests {
                 added_file_count: 1,
                 existing_file_count: 1,
             }),
-            "保存しました。\n追加フォント1件を配置しました。\n反映にはAviUtl2の再起動が必要です。"
+            "保存しました。\n追加フォント1件を配置しました。\n追加フォントとanm2の選択肢の反映にはAviUtl2の再起動が必要です。"
         );
-    }
-
-    #[test]
-    fn tracking_changes_only_gaps_between_glyphs() {
-        assert_eq!(tracked_run_width(&[10, 12, 8], 3), 36);
-        assert_eq!(tracked_run_width(&[10, 12, 8], -2), 26);
-        assert_eq!(tracked_run_width(&[10], 20), 10);
-    }
-
-    #[test]
-    fn mixed_preview_places_different_classes_next_to_each_other() {
-        assert_eq!(preview_run_gap(PreviewMode::Category, 8, 1.25), 22);
-        assert_eq!(preview_run_gap(PreviewMode::Mixed, 8, 1.25), 10);
-        assert_eq!(preview_run_gap(PreviewMode::Mixed, -8, 0.5), -4);
-    }
-
-    #[test]
-    fn scale_transform_keeps_the_preview_anchor_fixed() {
-        let transform = scale_about(20, 30, 1.25, 0.8);
-        assert_eq!(transform.eM11, 1.25);
-        assert_eq!(transform.eM22, 0.8);
-        assert_eq!(20.0 * transform.eM11 + transform.eDx, 20.0);
-        assert_eq!(30.0 * transform.eM22 + transform.eDy, 30.0);
-    }
-
-    #[test]
-    fn preview_fonts_share_a_baseline_regardless_of_their_ascent() {
-        let (first_top, first_baseline) = preview_vertical_positions(48, 30, 0);
-        let (second_top, second_baseline) = preview_vertical_positions(48, 38, 0);
-
-        assert_eq!(first_top, 18);
-        assert_eq!(second_top, 10);
-        assert_eq!(first_baseline, 48);
-        assert_eq!(second_baseline, 48);
-    }
-
-    #[test]
-    fn preview_baseline_adjustment_moves_the_run_from_the_shared_baseline() {
-        assert_eq!(preview_vertical_positions(48, 30, 4), (14, 44));
-        assert_eq!(preview_vertical_positions(48, 30, -4), (22, 52));
     }
 
     #[test]

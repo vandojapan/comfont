@@ -4,7 +4,8 @@ pub const DEFAULT_PROFILE_NAME: &str = "default";
 pub const PROFILE_SCHEMA_VERSION: u32 = 1;
 
 /// 合成フォントが区別する文字分類。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum CharacterClass {
     /// 半角ASCIIの英字。
     Western,
@@ -227,10 +228,115 @@ impl FontAdjustment {
     }
 }
 
+/// Inclusive Unicode range. Endpoints must be scalar values; a range may span
+/// the surrogate gap, which cannot match a Rust char.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UnicodeRange {
+    pub name: String,
+    pub start: u32,
+    pub end: u32,
+    pub adjustment: FontAdjustment,
+}
+impl UnicodeRange {
+    pub fn validate(&self) -> Result<(), String> {
+        if char::from_u32(self.start).is_none()
+            || char::from_u32(self.end).is_none()
+            || self.start > self.end
+        {
+            return Err("範囲の開始・終了には U+0000～U+10FFFF のUnicodeスカラー値を昇順で指定してください。".to_owned());
+        }
+        Ok(())
+    }
+    pub fn contains(&self, character: char) -> bool {
+        self.validate().is_ok() && (self.start..=self.end).contains(&(character as u32))
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct UnicodePreset {
+    pub name: &'static str,
+    pub start: u32,
+    pub end: u32,
+}
+pub const UNICODE_PRESETS: &[UnicodePreset] = &[
+    UnicodePreset {
+        name: "Basic Latin",
+        start: 0x0000,
+        end: 0x007F,
+    },
+    UnicodePreset {
+        name: "Latin-1 Supplement",
+        start: 0x0080,
+        end: 0x00FF,
+    },
+    UnicodePreset {
+        name: "ひらがな",
+        start: 0x3040,
+        end: 0x309F,
+    },
+    UnicodePreset {
+        name: "カタカナ",
+        start: 0x30A0,
+        end: 0x30FF,
+    },
+    UnicodePreset {
+        name: "CJK統合漢字",
+        start: 0x4E00,
+        end: 0x9FFF,
+    },
+    UnicodePreset {
+        name: "CJK統合漢字拡張A",
+        start: 0x3400,
+        end: 0x4DBF,
+    },
+    UnicodePreset {
+        name: "CJK統合漢字拡張B",
+        start: 0x20000,
+        end: 0x2A6DF,
+    },
+    UnicodePreset {
+        name: "CJK記号・句読点",
+        start: 0x3000,
+        end: 0x303F,
+    },
+    UnicodePreset {
+        name: "半角・全角形",
+        start: 0xFF00,
+        end: 0xFFEF,
+    },
+    UnicodePreset {
+        name: "絵文字 (Emoticons)",
+        start: 0x1F600,
+        end: 0x1F64F,
+    },
+];
+
+/// Accept hexadecimal values with optional U+ or 0x prefix.
+pub fn parse_codepoint(value: &str) -> Result<u32, String> {
+    let value = value.trim();
+    let value = value
+        .strip_prefix("U+")
+        .or_else(|| value.strip_prefix("u+"))
+        .or_else(|| value.strip_prefix("0x"))
+        .or_else(|| value.strip_prefix("0X"))
+        .unwrap_or(value);
+    let codepoint = u32::from_str_radix(value, 16)
+        .map_err(|_| "コードポイントは16進数で入力してください。".to_owned())?;
+    char::from_u32(codepoint).ok_or_else(|| "Unicodeスカラー値ではありません。".to_owned())?;
+    Ok(codepoint)
+}
+
 /// 各文字分類のフォント設定を持つ合成フォントプロファイル。
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CompositeFontProfile {
+    /// Custom rules win over legacy classification; first matching range wins.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub custom_ranges: Vec<UnicodeRange>,
+    /// Deleted legacy classes remain disabled across save/load.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disabled_classes: Vec<CharacterClass>,
     pub name: String,
     pub western: FontAdjustment,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -260,6 +366,8 @@ impl CompositeFontProfile {
     pub fn neutral_default() -> Self {
         Self {
             name: DEFAULT_PROFILE_NAME.to_owned(),
+            custom_ranges: Vec::new(),
+            disabled_classes: Vec::new(),
             western: FontAdjustment::neutral(),
             western_fallbacks: Vec::new(),
             hiragana: FontAdjustment::neutral(),
@@ -325,9 +433,37 @@ impl CompositeFontProfile {
         }
     }
 
+    pub fn matching_range(&self, character: char) -> Option<(usize, &UnicodeRange)> {
+        self.custom_ranges
+            .iter()
+            .enumerate()
+            .find(|(_, range)| range.contains(character))
+    }
+
+    pub fn class_enabled(&self, class: CharacterClass) -> bool {
+        !self.disabled_classes.contains(&class)
+    }
+
+    pub fn adjustment_for_character(&self, character: char) -> Option<&FontAdjustment> {
+        if let Some((_, range)) = self.matching_range(character) {
+            return Some(&range.adjustment);
+        }
+        let class = classify_character(character);
+        self.class_enabled(class)
+            .then(|| self.adjustment_for(class))
+    }
+
+    pub fn validate_ranges(&self) -> Result<(), String> {
+        for range in &self.custom_ranges {
+            range.validate()?;
+        }
+        Ok(())
+    }
+
     pub fn resolve(&self, codepoint: char) -> ResolvedFont {
         let class = classify_character(codepoint);
-        let adjustment = self.adjustment_for(class);
+        let neutral = FontAdjustment::neutral();
+        let adjustment = self.adjustment_for_character(codepoint).unwrap_or(&neutral);
         let metrics = adjustment.effective_metrics(None).unwrap_or_default();
         let class_name = class.as_str();
 
@@ -339,7 +475,10 @@ impl CompositeFontProfile {
             vertical_scale_ratio: adjustment.vertical_scale_ratio,
             horizontal_scale_ratio: adjustment.horizontal_scale_ratio,
             category: class_name.to_owned(),
-            rule_id: class_name.to_owned(),
+            rule_id: self.matching_range(codepoint).map_or_else(
+                || class_name.to_owned(),
+                |(index, _)| format!("unicode:{index}"),
+            ),
         }
     }
 }
@@ -374,6 +513,10 @@ pub struct ProfileStore {
 }
 
 impl ProfileStore {
+    pub fn profiles(&self) -> impl Iterator<Item = &CompositeFontProfile> {
+        self.profiles.values()
+    }
+
     pub fn with_builtin_default() -> Self {
         Self::from_profiles([CompositeFontProfile::neutral_default()])
     }
@@ -420,6 +563,31 @@ pub fn codepoint_to_char(value: u32) -> Result<char, ResolveError> {
     char::from_u32(value).ok_or(ResolveError::InvalidCodepoint(value))
 }
 
+/// Stable anm2 selector value. Zero belongs to the built-in default, -1 to off.
+/// Names are hashed rather than indexed so reordering cannot change selection.
+/// Display-safe label for AviUtl's static select directive and saved alias.
+pub fn profile_selection_label(name: &str) -> String {
+    name.chars()
+        .map(|c| match c {
+            ',' => '，',
+            '=' => '＝',
+            ':' => '：',
+            '\\' => '＼',
+            c if c.is_control() => ' ',
+            c => c,
+        })
+        .collect()
+}
+pub fn profile_selection_id(name: &str) -> i32 {
+    if name == DEFAULT_PROFILE_NAME {
+        return 0;
+    }
+    let hash = name.as_bytes().iter().fold(2166136261u32, |hash, byte| {
+        (hash ^ u32::from(*byte)).wrapping_mul(16777619)
+    });
+    ((hash & 0x7fffffff).max(1)) as i32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -439,6 +607,8 @@ mod tests {
 
     fn test_profile() -> CompositeFontProfile {
         CompositeFontProfile {
+            custom_ranges: Vec::new(),
+            disabled_classes: Vec::new(),
             name: "subtitle".to_owned(),
             western: adjustment("Inter"),
             western_fallbacks: Vec::new(),
@@ -571,5 +741,61 @@ mod tests {
         let store = ProfileStore::with_builtin_default();
         let error = store.resolve('A', Some("missing")).unwrap_err();
         assert_eq!(error, ResolveError::ProfileNotFound("missing".to_owned()));
+    }
+
+    #[test]
+    fn custom_ranges_win_and_use_first_match_including_supplementary_planes() {
+        let mut profile = test_profile();
+        for (name, start, end, font) in [
+            ("first", 0x41, 0x5A, "First"),
+            ("overlap", 0x41, 0x7F, "Second"),
+            ("emoji", 0x1F600, 0x1F64F, "Emoji"),
+        ] {
+            profile.custom_ranges.push(UnicodeRange {
+                name: name.to_owned(),
+                start,
+                end,
+                adjustment: adjustment(font),
+            });
+        }
+        assert_eq!(profile.resolve('A').font_family, "First");
+        assert_eq!(profile.resolve('A').rule_id, "unicode:0");
+        assert_eq!(profile.resolve('😀').font_family, "Emoji");
+        assert_eq!(profile.resolve('z').font_family, "Second");
+        assert_eq!(profile.resolve('あ').font_family, "Hiragana Font");
+        profile.custom_ranges[0].adjustment = FontAdjustment::neutral();
+        assert_eq!(profile.resolve('A').font_family, ""); // Matching neutral range blocks lower rules.
+    }
+    #[test]
+    fn validates_range_endpoints_and_hex_input() {
+        for value in ["D800", "DFFF", "110000", "-1", "xyz"] {
+            assert!(parse_codepoint(value).is_err());
+        }
+        assert_eq!(parse_codepoint(" U+1F600 ").unwrap(), 0x1F600);
+        assert_eq!(parse_codepoint("0x10FFFF").unwrap(), 0x10FFFF);
+        let mut range = UnicodeRange {
+            name: "test".to_owned(),
+            start: 0,
+            end: 0x10FFFF,
+            adjustment: FontAdjustment::neutral(),
+        };
+        assert!(range.validate().is_ok());
+        range.start = 0xD800;
+        assert!(range.validate().is_err());
+        range.start = 10;
+        range.end = 9;
+        assert!(range.validate().is_err());
+        for preset in UNICODE_PRESETS {
+            assert!(
+                UnicodeRange {
+                    name: preset.name.to_owned(),
+                    start: preset.start,
+                    end: preset.end,
+                    adjustment: FontAdjustment::neutral()
+                }
+                .validate()
+                .is_ok()
+            );
+        }
     }
 }

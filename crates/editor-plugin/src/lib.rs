@@ -1,7 +1,11 @@
+#[cfg(feature = "egui-ui")]
+mod egui_ui;
 mod entrypoint;
 mod font_collection;
 mod model;
+mod profile_selector;
 mod storage;
+mod text_integration;
 mod ui;
 
 use std::{
@@ -80,12 +84,26 @@ impl GenericPlugin for CompositeFontEditorPlugin {
     fn register(&mut self, registry: &mut aviutl2::generic::HostAppHandle) {
         let edit_handle = Arc::new(registry.create_edit_handle());
         if let Ok(mut runtime) = self.editor_runtime.lock() {
-            runtime.edit_handle = Some(edit_handle);
+            runtime.edit_handle = Some(Arc::clone(&edit_handle));
         } else {
             let _ = aviutl2::logger::write_error_log("合成フォント画面の共有状態を更新できません");
         }
+        {
+            let (name, restore) = ("合成フォント\\元の本文に戻す", true);
+            let handle = Arc::clone(&edit_handle);
+            registry.register_object_item_menu(name, move |object, effect, index, item| {
+                if let Err(error) =
+                    text_integration::update_text(&handle, object, effect, index, item, restore)
+                {
+                    let _ = aviutl2::logger::write_error_log(&error);
+                    ui::report_error(&error);
+                }
+            });
+        }
         registry.register_script_module(Some("compositefont"), &self.script_module);
         registry.register_menus::<Self>();
+        #[cfg(feature = "egui-ui")]
+        registry.register_menus::<EguiMenus>();
     }
 
     fn on_project_load(&mut self, _project: &mut aviutl2::generic::ProjectFile) {
@@ -109,39 +127,77 @@ impl GenericPlugin for CompositeFontEditorPlugin {
 impl CompositeFontEditorPlugin {
     #[config(name = "合成フォント…")]
     fn show_config(owner: aviutl2::Win32WindowHandle) -> aviutl2::AnyResult<()> {
-        // This menu callback must not borrow the GenericPlugin singleton. The
-        // editor runs a nested modal message loop, while AviUtl2 event threads
-        // continue entering GenericPlugin callbacks.
-        let runtime = editor_runtime().map_err(aviutl2::anyhow::Error::msg)?;
-        let (document, profile_path, edit_handle, font_registration) = {
-            let runtime = runtime
-                .lock()
-                .map_err(|_| aviutl2::anyhow::Error::msg("Editor state lock was poisoned"))?;
-            let edit_handle = runtime
-                .edit_handle
-                .clone()
-                .ok_or_else(|| aviutl2::anyhow::Error::msg("EditHandle is not initialized"))?;
-            (
-                runtime.document.clone(),
-                runtime.profile_path.clone(),
-                edit_handle,
-                Arc::clone(&runtime.font_registration),
-            )
-        };
-        let document = ui::show_editor(
-            owner,
-            document,
-            profile_path,
-            edit_handle,
-            font_registration,
-        )
-        .map_err(aviutl2::anyhow::Error::msg)?;
-        runtime
-            .lock()
-            .map_err(|_| aviutl2::anyhow::Error::msg("Editor state lock was poisoned"))?
-            .document = document;
-        Ok(())
+        show_editor_menu(owner, false)
     }
+}
+
+#[cfg(feature = "egui-ui")]
+struct EguiMenus;
+
+#[cfg(feature = "egui-ui")]
+#[aviutl2::generic::menus]
+impl EguiMenus {
+    #[config(name = "合成フォント (egui 試験版)…")]
+    fn show_config_egui(owner: aviutl2::Win32WindowHandle) -> aviutl2::AnyResult<()> {
+        show_editor_menu(owner, true)
+    }
+}
+
+fn show_editor_menu(owner: aviutl2::Win32WindowHandle, use_egui: bool) -> aviutl2::AnyResult<()> {
+    static OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if OPEN.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return Ok(());
+    }
+    struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OPEN.store(false, std::sync::atomic::Ordering::Release);
+        }
+    }
+    let _guard = Guard;
+    // This menu callback must not borrow the GenericPlugin singleton. The
+    // editor runs a nested modal message loop, while AviUtl2 event threads
+    // continue entering GenericPlugin callbacks.
+    let runtime = editor_runtime().map_err(aviutl2::anyhow::Error::msg)?;
+    let (document, profile_path, edit_handle, font_registration) = {
+        let runtime = runtime
+            .lock()
+            .map_err(|_| aviutl2::anyhow::Error::msg("Editor state lock was poisoned"))?;
+        let edit_handle = runtime
+            .edit_handle
+            .clone()
+            .ok_or_else(|| aviutl2::anyhow::Error::msg("EditHandle is not initialized"))?;
+        (
+            storage::load_document(&runtime.profile_path).map_err(aviutl2::anyhow::Error::msg)?,
+            runtime.profile_path.clone(),
+            edit_handle,
+            Arc::clone(&runtime.font_registration),
+        )
+    };
+    #[cfg(feature = "egui-ui")]
+    let show = if use_egui {
+        egui_ui::show_editor
+    } else {
+        ui::show_editor
+    };
+    #[cfg(not(feature = "egui-ui"))]
+    let show = {
+        let _ = use_egui;
+        ui::show_editor
+    };
+    let document = show(
+        owner,
+        document,
+        profile_path,
+        edit_handle,
+        font_registration,
+    )
+    .map_err(aviutl2::anyhow::Error::msg)?;
+    runtime
+        .lock()
+        .map_err(|_| aviutl2::anyhow::Error::msg("Editor state lock was poisoned"))?
+        .document = document;
+    Ok(())
 }
 
 #[cfg(test)]
