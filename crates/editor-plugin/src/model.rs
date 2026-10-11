@@ -192,6 +192,113 @@ impl EditorModel {
         true
     }
 
+    #[cfg(any(test, feature = "egui-ui"))]
+    pub fn copy_table_rows(&mut self, rows: &[usize]) -> Vec<usize> {
+        let mut rows = rows.to_vec();
+        rows.sort_unstable();
+        rows.dedup();
+        let sources: Vec<_> = rows
+            .into_iter()
+            .filter_map(|row| self.table_row_target(row))
+            .collect();
+        let mut copies = Vec::new();
+        // Resolve stable targets after each append, keeping the source order.
+        for source in sources {
+            if let Some(row) = self
+                .table_targets()
+                .iter()
+                .position(|target| *target == source)
+                && self.select_table_row(row)
+                && self.copy_selected_adjustment()
+            {
+                copies.push(self.table_row_target(self.selected_table_row()).unwrap());
+            }
+        }
+        let targets = self.table_targets();
+        let rows: Vec<_> = targets
+            .iter()
+            .enumerate()
+            .filter_map(|(row, target)| copies.contains(target).then_some(row))
+            .collect();
+        if let Some(&row) = rows.first() {
+            self.select_table_row(row);
+        }
+        rows
+    }
+
+    #[cfg(any(test, feature = "egui-ui"))]
+    pub fn patch_table_rows(
+        &mut self,
+        rows: &[usize],
+        patch: &AdjustmentPatch,
+    ) -> Result<(), String> {
+        let mut updates = Vec::new();
+        for &row in rows {
+            let Some(adjustment) = self.adjustment_for_table_row(row) else {
+                continue;
+            };
+            let mut values = adjustment_values(adjustment);
+            for (value, replacement) in values.iter_mut().zip(patch.values) {
+                if let Some(replacement) = replacement {
+                    *value = replacement;
+                }
+            }
+            let mut updated = make_adjustment(
+                patch
+                    .font_family
+                    .clone()
+                    .unwrap_or_else(|| adjustment.font_family.clone()),
+                patch.metric_unit.unwrap_or(adjustment.metric_unit),
+                values[0],
+                values[1],
+                values[2],
+                values[3],
+                values[4],
+            )?;
+            updated.fallback_font_families = adjustment.fallback_font_families.clone();
+            // Preserve fields byte-for-byte unless the user changed their item.
+            if patch.font_family.is_none() {
+                updated.font_family = adjustment.font_family.clone();
+            }
+            if patch.values[3].is_none() {
+                updated.vertical_scale_ratio = adjustment.vertical_scale_ratio;
+            }
+            if patch.values[4].is_none() {
+                updated.horizontal_scale_ratio = adjustment.horizontal_scale_ratio;
+            }
+            if patch.metric_unit.is_none() {
+                if patch.values[0].is_none() {
+                    updated.size_ratio = adjustment.size_ratio;
+                    updated.size_px = adjustment.size_px;
+                }
+                if patch.values[1].is_none() {
+                    updated.baseline_shift_em = adjustment.baseline_shift_em;
+                    updated.baseline_shift_px = adjustment.baseline_shift_px;
+                }
+                if patch.values[2].is_none() {
+                    updated.tracking_adjust_em = adjustment.tracking_adjust_em;
+                    updated.tracking_adjust_px = adjustment.tracking_adjust_px;
+                }
+            }
+            updates.push((self.table_row_target(row).unwrap(), updated));
+        }
+        // Validate the complete batch before writing any row.
+        for ((category, fallback), adjustment) in updates {
+            let profile = self.selected_profile_mut();
+            if category >= CATEGORY_ROWS.len() {
+                profile.custom_ranges[category - CATEGORY_ROWS.len()].adjustment = adjustment;
+            } else {
+                let class = CATEGORY_ROWS[category].class;
+                if let Some(index) = fallback {
+                    profile.fallbacks_for_mut(class)[index] = adjustment;
+                } else {
+                    *profile.adjustment_for_mut(class) = adjustment;
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn remove_adjustments_for_table_rows(&mut self, rows: &[usize]) -> usize {
         let mut targets = rows
             .iter()
@@ -514,6 +621,33 @@ impl EditorModel {
     }
 }
 
+#[cfg(any(test, feature = "egui-ui"))]
+#[derive(Default)]
+pub struct AdjustmentPatch {
+    pub font_family: Option<String>,
+    pub metric_unit: Option<MetricUnit>,
+    pub values: [Option<f64>; 5],
+}
+#[cfg(any(test, feature = "egui-ui"))]
+pub fn adjustment_values(adjustment: &FontAdjustment) -> [f64; 5] {
+    match adjustment.metric_unit {
+        MetricUnit::Percent => [
+            adjustment.size_ratio * 100.0,
+            adjustment.baseline_shift_em * 100.0,
+            adjustment.tracking_adjust_em * 100.0,
+            adjustment.vertical_scale_ratio * 100.0,
+            adjustment.horizontal_scale_ratio * 100.0,
+        ],
+        MetricUnit::Pixels => [
+            adjustment.size_px.unwrap_or(32.0),
+            adjustment.baseline_shift_px.unwrap_or(0.0),
+            adjustment.tracking_adjust_px.unwrap_or(0.0),
+            adjustment.vertical_scale_ratio * 100.0,
+            adjustment.horizontal_scale_ratio * 100.0,
+        ],
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn make_adjustment(
     font_family: String,
@@ -604,6 +738,101 @@ fn migrate_legacy_kanji_fallbacks(profile: &mut CompositeFontProfile) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn batch_patch_preserves_different_fonts_units_and_untouched_values() {
+        let mut model = EditorModel::new(ProfileDocument::with_builtin_default());
+        model
+            .update_table_rows(
+                &[0],
+                "First".into(),
+                MetricUnit::Percent,
+                120.0,
+                2.0,
+                3.0,
+                90.0,
+                110.0,
+            )
+            .unwrap();
+        model
+            .update_table_rows(
+                &[4],
+                "Second".into(),
+                MetricUnit::Pixels,
+                48.0,
+                -4.0,
+                5.0,
+                95.0,
+                105.0,
+            )
+            .unwrap();
+        let first = model.adjustment_for_table_row(0).unwrap().clone();
+        let second = model.adjustment_for_table_row(4).unwrap().clone();
+        model
+            .patch_table_rows(
+                &[0, 4],
+                &AdjustmentPatch {
+                    values: [None, None, None, Some(150.0), None],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let mut expected_first = first;
+        expected_first.vertical_scale_ratio = 1.5;
+        let mut expected_second = second;
+        expected_second.vertical_scale_ratio = 1.5;
+        assert_eq!(model.adjustment_for_table_row(0), Some(&expected_first));
+        assert_eq!(model.adjustment_for_table_row(4), Some(&expected_second));
+        let before = model.document().clone();
+        assert!(
+            model
+                .patch_table_rows(
+                    &[0, 4],
+                    &AdjustmentPatch {
+                        values: [Some(-1.0), None, None, None, None],
+                        ..Default::default()
+                    }
+                )
+                .is_err()
+        );
+        assert_eq!(model.document(), &before);
+        model
+            .patch_table_rows(
+                &[],
+                &AdjustmentPatch {
+                    font_family: Some("Ignored".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(model.document(), &before);
+    }
+    #[test]
+    fn copies_multiple_sources_in_order_despite_row_index_changes() {
+        let mut model = EditorModel::new(ProfileDocument::with_builtin_default());
+        model.selected_profile_mut().kanji.font_family = "First".into();
+        model.add_selected_adjustment();
+        model.selected_profile_mut().kanji_fallbacks[0].font_family = "Second".into();
+        model.add_range("Latin".into(), 0x41, 0x5a).unwrap();
+        let custom_row = model.selected_table_row();
+        let copies = model.copy_table_rows(&[0, 1, custom_row, 0]);
+        assert_eq!(copies.len(), 3);
+        assert_eq!(
+            model
+                .selected_profile()
+                .kanji_fallbacks
+                .iter()
+                .map(|a| a.font_family.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Second", "First", "Second"]
+        );
+        assert_eq!(model.selected_profile().custom_ranges.len(), 2);
+        assert!(
+            copies
+                .iter()
+                .all(|&r| model.adjustment_for_table_row(r).is_some())
+        );
+    }
 
     #[test]
     fn creates_renames_and_deletes_profiles() {

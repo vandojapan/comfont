@@ -939,8 +939,14 @@ unsafe fn create_controls(window: HWND, context: &mut DialogContext) -> Result<(
         create_label(window, instance, "終了 U+", 385, 363, 65, 20, 0, font)?;
         context.controls.range_end =
             create_edit(window, instance, 450, 360, 80, ID_RANGE_END, font)?;
-        set_text(context.controls.range_start, "0000");
-        set_text(context.controls.range_end, "007F");
+        set_text(
+            context.controls.range_start,
+            &format!("{:04X}", UNICODE_PRESETS[0].start),
+        );
+        set_text(
+            context.controls.range_end,
+            &format!("{:04X}", UNICODE_PRESETS[0].end),
+        );
         create_child(
             window,
             instance,

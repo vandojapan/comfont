@@ -1,6 +1,6 @@
 use crate::{
     font_collection::FontRegistrationState,
-    model::{CATEGORY_ROWS, EditorModel, RowMoveDirection},
+    model::{AdjustmentPatch, CATEGORY_ROWS, EditorModel, RowMoveDirection, adjustment_values},
     storage,
 };
 use aviutl2::generic::EditHandle;
@@ -15,6 +15,9 @@ use winit::platform::windows::EventLoopBuilderExtWindows;
 #[path = "egui_font_picker.rs"]
 mod font_picker;
 use font_picker::FontPicker;
+#[path = "egui_selection.rs"]
+mod selection;
+use selection::RowSelection;
 
 // Google Material Icons (Apache-2.0; bundled LICENSE.txt).
 fn icon_label(icon: char, label: &str) -> egui::WidgetText {
@@ -66,6 +69,108 @@ fn section_title(ui: &mut egui::Ui, title: &str) -> egui::Response {
         .response
 }
 
+/// Keep the header's child layouts within one row instead of the whole sidebar.
+fn profile_header(ui: &mut egui::Ui) -> egui::InnerResponse<egui::Response> {
+    section_frame().show(ui, |ui| {
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), 32.0),
+            egui::Layout::right_to_left(egui::Align::Center),
+            |ui| {
+                let add = ui.add_sized([32.0, 32.0], egui::Button::new(icon_label('\u{e145}', "")));
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.heading("プロファイル");
+                });
+                add
+            },
+        )
+        .inner
+    })
+}
+
+fn preset_row(ui: &mut egui::Ui, index: usize, selected: usize) -> egui::Response {
+    let preset = &UNICODE_PRESETS[index];
+    ui.add_sized(
+        [ui.available_width(), 28.0],
+        left_selectable(
+            index == selected,
+            &format!("{}  U+{:04X}–{:04X}", preset.name, preset.start, preset.end),
+        ),
+    )
+}
+
+fn metric_input(ui: &mut egui::Ui, value: &mut f64, index: usize) -> egui::Response {
+    let positive = matches!(index, 0 | 3 | 4);
+    let mut widget = egui::DragValue::new(value).speed(0.1);
+    if positive {
+        widget = widget.range(0.1..=f64::MAX);
+    }
+    let mut response = ui.add_sized([72.0, 28.0], widget);
+    if response.hovered() {
+        let delta = ui.input_mut(|i| {
+            // Consume raw wheel once, before the enclosing ScrollArea processes it.
+            let mut delta = 0.0;
+            i.events.retain(|event| {
+                if let egui::Event::MouseWheel {
+                    unit, delta: wheel, ..
+                } = event
+                {
+                    delta += match unit {
+                        egui::MouseWheelUnit::Line | egui::MouseWheelUnit::Page => wheel.y,
+                        egui::MouseWheelUnit::Point => wheel.y / 40.0,
+                    };
+                    false
+                } else {
+                    true
+                }
+            });
+            i.raw_scroll_delta.y = 0.0;
+            i.smooth_scroll_delta.y = 0.0;
+            delta
+        });
+        if delta != 0.0 {
+            ui.memory_mut(|m| m.surrender_focus(response.id));
+            let step = ui.input(|i| {
+                if i.modifiers.shift {
+                    0.1
+                } else if i.modifiers.ctrl {
+                    10.0
+                } else {
+                    1.0
+                }
+            });
+            *value = ((*value + f64::from(delta) * step) * 10.0).round() / 10.0;
+            if positive {
+                *value = value.max(0.1);
+            }
+            response.mark_changed();
+            ui.ctx().request_repaint();
+        }
+    }
+    response
+}
+
+// Scope DPI awareness to this UI thread; never change the host process setting.
+struct ThreadDpiScope(windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT);
+impl ThreadDpiScope {
+    fn enter() -> Self {
+        use windows::Win32::UI::HiDpi::{
+            DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext,
+        };
+        // SAFETY: this changes only the calling UI thread and is restored by Drop.
+        Self(unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) })
+    }
+}
+impl Drop for ThreadDpiScope {
+    fn drop(&mut self) {
+        if !self.0.0.is_null() {
+            // SAFETY: restore the context returned for this same thread.
+            unsafe {
+                windows::Win32::UI::HiDpi::SetThreadDpiAwarenessContext(self.0);
+            }
+        }
+    }
+}
+
 struct EditorApp {
     model: EditorModel,
     path: PathBuf,
@@ -78,6 +183,8 @@ struct EditorApp {
     font_picker: FontPicker,
     unit: MetricUnit,
     values: [f64; 5],
+    selection: RowSelection,
+    changed_fields: [bool; 7],
     editing_profile: bool,
     focus_profile_editor: bool,
     range_dialog: Option<RangeDialog>,
@@ -103,51 +210,46 @@ impl EditorApp {
         let adjustment = self.model.selected_adjustment();
         self.font = adjustment.font_family.clone();
         self.unit = adjustment.metric_unit;
-        self.values = match self.unit {
-            MetricUnit::Percent => [
-                adjustment.size_ratio * 100.0,
-                adjustment.baseline_shift_em * 100.0,
-                adjustment.tracking_adjust_em * 100.0,
-                adjustment.vertical_scale_ratio * 100.0,
-                adjustment.horizontal_scale_ratio * 100.0,
-            ],
-            MetricUnit::Pixels => [
-                adjustment.size_px.unwrap_or(32.0),
-                adjustment.baseline_shift_px.unwrap_or(0.0),
-                adjustment.tracking_adjust_px.unwrap_or(0.0),
-                adjustment.vertical_scale_ratio * 100.0,
-                adjustment.horizontal_scale_ratio * 100.0,
-            ],
-        };
+        self.values = adjustment_values(adjustment);
+        self.changed_fields = [false; 7];
         if let Some(range) = self.model.selected_range() {
             self.start = format!("{:04X}", range.start);
             self.end = format!("{:04X}", range.end);
         }
-        self.preview_dirty = true;
         self.scroll_selected_row = true;
+    }
+    fn reset_selection(&mut self) {
+        self.selection.single(
+            self.model.selected_table_row(),
+            self.model.table_row_count(),
+        );
+        self.load_fields();
+        self.preview_dirty = true;
     }
     fn apply(&mut self) -> Result<(), String> {
         // Validate all editor fields before committing any changes.
         let mut candidate = self.model.clone();
         candidate.rename_selected_profile(&self.profile_name)?;
-        if candidate.selected_range().is_some() {
+        if self.selection.rows.len() == 1 && candidate.selected_range().is_some() {
             candidate.update_selected_range(
                 parse_codepoint(&self.start)?,
                 parse_codepoint(&self.end)?,
             )?;
         }
-        candidate.update_table_rows(
-            &[candidate.selected_table_row()],
-            self.font.clone(),
-            self.unit,
-            self.values[0],
-            self.values[1],
-            self.values[2],
-            self.values[3],
-            self.values[4],
-        )?;
+        if self.changed_fields.iter().any(|&changed| changed) {
+            let patch = AdjustmentPatch {
+                font_family: self.changed_fields[0].then(|| self.font.clone()),
+                metric_unit: self.changed_fields[1].then_some(self.unit),
+                values: std::array::from_fn(|index| {
+                    (self.changed_fields[index + 2] || (index < 3 && self.changed_fields[1]))
+                        .then_some(self.values[index])
+                }),
+            };
+            candidate.patch_table_rows(&self.selection.rows, &patch)?;
+        }
+        self.preview_dirty |= self.model.document() != candidate.document();
         self.model = candidate;
-        self.preview_dirty = true;
+        self.changed_fields = [false; 7];
         Ok(())
     }
     fn save(&mut self) -> Result<(), String> {
@@ -203,8 +305,15 @@ impl EditorApp {
                     [bitmap.width as usize, bitmap.height as usize],
                     &rgba,
                 );
-                self.preview =
-                    Some(ctx.load_texture("comfont-preview", image, egui::TextureOptions::LINEAR));
+                if let Some(texture) = &mut self.preview {
+                    texture.set(image, egui::TextureOptions::LINEAR);
+                } else {
+                    self.preview = Some(ctx.load_texture(
+                        "comfont-preview",
+                        image,
+                        egui::TextureOptions::LINEAR,
+                    ));
+                }
             }
             result => {
                 self.preview = None;
@@ -221,6 +330,8 @@ impl EditorApp {
 struct RangeDialog {
     custom: bool,
     preset: usize,
+    preset_search: String,
+    focus_preset_search: bool,
     name: String,
     start: String,
     end: String,
@@ -231,9 +342,11 @@ impl Default for RangeDialog {
         Self {
             custom: false,
             preset: 0,
+            preset_search: String::new(),
+            focus_preset_search: true,
             name: "カスタム範囲".into(),
-            start: "0000".into(),
-            end: "007F".into(),
+            start: format!("{:04X}", UNICODE_PRESETS[0].start),
+            end: format!("{:04X}", UNICODE_PRESETS[0].end),
             error: String::new(),
         }
     }
@@ -247,7 +360,7 @@ impl EditorApp {
             Ok(()) => {
                 self.model.select_profile(index);
                 self.editing_profile = false;
-                self.load_fields();
+                self.reset_selection();
             }
             Err(e) => self.status = e,
         }
@@ -256,7 +369,7 @@ impl EditorApp {
         match self.model.delete_selected_profile() {
             Ok(()) => {
                 self.editing_profile = false;
-                self.load_fields();
+                self.reset_selection();
             }
             Err(e) => self.status = e,
         }
@@ -271,32 +384,24 @@ impl EditorApp {
         }
     }
     fn profiles_ui(&mut self, ui: &mut egui::Ui) {
-        section_frame().show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            ui.horizontal(|ui| {
-                ui.heading("プロファイル");
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if self
-                        .explain(
-                            ui.button(icon_label('\u{e145}', "")),
-                            "新規プロファイルを作成し、名前を編集します。",
-                        )
-                        .clicked()
-                    {
-                        match self.apply() {
-                            Ok(()) => {
-                                self.model.create_profile();
-                                self.editing_profile = true;
-                                self.focus_profile_editor = true;
-                                self.load_fields();
-                            }
-                            Err(e) => self.status = e,
-                        }
-                    }
-                });
-            });
-        });
-        ui.add_space(16.0);
+        if self
+            .explain(
+                profile_header(ui).inner,
+                "新規プロファイルを作成し、名前を編集します。",
+            )
+            .clicked()
+        {
+            match self.apply() {
+                Ok(()) => {
+                    self.model.create_profile();
+                    self.editing_profile = true;
+                    self.focus_profile_editor = true;
+                    self.reset_selection();
+                }
+                Err(e) => self.status = e,
+            }
+        }
+        ui.add_space(12.0);
         let names: Vec<_> = self
             .model
             .document()
@@ -304,7 +409,7 @@ impl EditorApp {
             .iter()
             .map(|p| p.name.clone())
             .collect();
-        let list_height = (ui.available_height() * 0.28).clamp(100.0, 240.0);
+        let list_height = ui.available_height().max(32.0);
         egui::ScrollArea::vertical()
             .id_salt("profile-list")
             .max_height(list_height)
@@ -366,8 +471,6 @@ impl EditorApp {
                     });
                 }
             });
-        ui.add_space(12.0);
-        ui.separator();
     }
     fn preview_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.horizontal(|ui| {
@@ -421,7 +524,7 @@ impl EditorApp {
             if self
                 .explain(
                     ui.add_enabled(
-                        self.model.table_row_count() > 0,
+                        !self.selection.rows.is_empty(),
                         egui::Button::new(icon_label('\u{e92e}', "削除")),
                     ),
                     "選択した範囲・分類を削除します。全範囲を削除すると無装飾です。",
@@ -429,13 +532,13 @@ impl EditorApp {
                 .clicked()
             {
                 self.model
-                    .remove_adjustments_for_table_rows(&[self.model.selected_table_row()]);
-                self.load_fields();
+                    .remove_adjustments_for_table_rows(&self.selection.rows);
+                self.reset_selection();
             }
             if self
                 .explain(
                     ui.add_enabled(
-                        self.model.table_row_count() > 0,
+                        !self.selection.rows.is_empty(),
                         egui::Button::new(icon_label('\u{e14d}', "コピー")),
                     ),
                     "選択行のフォントと補正値をコピーします。",
@@ -444,8 +547,10 @@ impl EditorApp {
             {
                 match self.apply() {
                     Ok(()) => {
-                        self.model.copy_selected_adjustment();
+                        let rows = self.model.copy_table_rows(&self.selection.rows);
+                        self.selection.replace(rows);
                         self.load_fields();
+                        self.preview_dirty = true;
                     }
                     Err(e) => self.status = e,
                 }
@@ -454,11 +559,11 @@ impl EditorApp {
                 ('\u{e5d8}', RowMoveDirection::Up, "上へ移動"),
                 ('\u{e5db}', RowMoveDirection::Down, "下へ移動"),
             ] {
-                let row = self.model.selected_table_row();
                 if self
                     .explain(
                         ui.add_enabled(
-                            self.model.can_move_table_rows(&[row], direction),
+                            self.model
+                                .can_move_table_rows(&self.selection.rows, direction),
                             egui::Button::new(icon_label(icon, "")),
                         ),
                         tooltip,
@@ -467,8 +572,10 @@ impl EditorApp {
                 {
                     match self.apply() {
                         Ok(()) => {
-                            self.model.move_table_rows(&[row], direction);
+                            let rows = self.model.move_table_rows(&self.selection.rows, direction);
+                            self.selection.replace(rows);
                             self.load_fields();
+                            self.preview_dirty = true;
                         }
                         Err(e) => self.status = e,
                     }
@@ -504,18 +611,24 @@ impl EditorApp {
                             let label = format!("{}    {}", self.model.table_row_label(row), font);
                             let response = ui.add_sized(
                                 [ui.available_width(), 32.0],
-                                left_selectable(row == self.model.selected_table_row(), &label),
+                                left_selectable(self.selection.rows.contains(&row), &label),
                             );
-                            self.explain(response.clone(), "カスタム範囲を優先し、重複時は上から最初に一致した範囲を使います。行を選択すると下で編集できます。");
+                            self.explain(response.clone(), "カスタム範囲を優先し、重複時は上から最初に一致した範囲を使います。Shiftで範囲選択、Ctrlで追加・解除。通常クリックで複数選択を解除し、その行を編集します。");
                             if self.scroll_selected_row && row == self.model.selected_table_row() {
                                 response.scroll_to_me(Some(egui::Align::Center));
                                 self.scroll_selected_row = false;
                             }
-                            if response.clicked() && row != self.model.selected_table_row() {
+                            if response.clicked() {
                                 match self.apply() {
                                     Ok(()) => {
-                                        self.model.select_table_row(row);
+                                        let modifiers = ui.input(|i| i.modifiers);
+                                        self.selection.click(row, self.model.table_row_count(), modifiers.shift, modifiers.ctrl);
+                                        if let Some(active) = self.selection.rows.iter().copied().find(|&r| r == row)
+                                            .or_else(|| self.selection.rows.first().copied()) {
+                                            self.model.select_table_row(active);
+                                        }
                                         self.load_fields();
+                                        self.scroll_selected_row = false;
                                     }
                                     Err(e) => self.status = e,
                                 }
@@ -524,10 +637,15 @@ impl EditorApp {
                     });
             });
         ui.add_space(16.0);
-        if self.model.table_row_count() == 0 {
+        if self.selection.rows.is_empty() {
             return;
         }
-        let title = self.model.table_row_label(self.model.selected_table_row());
+        let multiple = self.selection.rows.len() > 1;
+        let title = if multiple {
+            format!("({}つ選択)", self.selection.rows.len())
+        } else {
+            self.model.table_row_label(self.model.selected_table_row())
+        };
         section_frame().show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             ui.horizontal(|ui| {
@@ -542,7 +660,7 @@ impl EditorApp {
                 });
             });
         });
-        if self.model.selected_range().is_some() {
+        if !multiple && self.model.selected_range().is_some() {
             ui.horizontal(|ui| {
                 self.explain(
                     ui.label("開始 U+"),
@@ -565,20 +683,24 @@ impl EditorApp {
             });
         }
         ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            self.explain(ui.label("フォント"), "フォント名は直接入力、または右端の一覧から選択できます。空欄はフォントを変更しません。");
+        if multiple {
+            ui.weak("変更した項目だけを選択行へ適用します。表示値は最後に選んだ行の値です。");
+        }
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().interact_size.y = 32.0;
+            self.explain(ui.add_sized([48.0, 32.0], egui::Label::new("フォント")), "フォント名は直接入力、または右端の一覧から選択できます。空欄はフォントを変更しません。");
             ui.scope(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
-                let input = ui.add(
-                    egui::TextEdit::singleline(&mut self.font)
-                        .desired_width((ui.available_width() - 140.0).clamp(160.0, 420.0))
-                        .hint_text("フォント名を入力"),
-                );
+                let width = (ui.available_width() - 140.0).clamp(160.0, 420.0);
+                let input = ui.add_sized([width, 32.0],
+                    egui::TextEdit::singleline(&mut self.font).hint_text("フォント名を入力"));
+                self.changed_fields[0] |= input.changed();
                 self.explain(input.clone(), "フォント名は直接入力、または右端の一覧から選択できます。空欄はフォントを変更しません。");
-                let button = ui.button(icon_label('\u{e5c5}', ""));
+                let button = ui.add_sized([36.0, 32.0], egui::Button::new(icon_label('', "")));
                 self.explain(button.clone(), "フォント一覧を開きます。検索して選択できます。");
                 self.font_picker.button(&button, input.rect.union(button.rect), input.rect.height());
             });
+            let old_unit = self.unit;
             let unit = egui::ComboBox::from_id_salt("unit")
                 .width(50.0)
                 .selected_text(if self.unit == MetricUnit::Percent {
@@ -590,6 +712,7 @@ impl EditorApp {
                     ui.selectable_value(&mut self.unit, MetricUnit::Percent, "%");
                     ui.selectable_value(&mut self.unit, MetricUnit::Pixels, "px");
                 });
+            self.changed_fields[1] |= self.unit != old_unit;
             self.explain(unit.response, "サイズ・ベースライン・字送りの単位を切り替えます。%は元のサイズに対する比率、pxは絶対値です。");
         });
         ui.add_space(12.0);
@@ -608,8 +731,9 @@ impl EditorApp {
                                 ('\u{f69b}', "水平 (%)", "文字を横方向に拡大・縮小します。100%で元の幅です。"),
                             ][index];
                             self.explain(ui.label(material_label(icon, label, "MaterialMetrics")), help);
-                            let response = ui.add_sized([72.0, 28.0], egui::DragValue::new(&mut self.values[index]).speed(0.1));
-                            self.explain(response, help);
+                            let response = metric_input(ui, &mut self.values[index], index);
+                            self.changed_fields[index + 2] |= response.changed();
+                            self.explain(response, &format!("{help} ホイールで1ずつ、Shiftで0.1ずつ、Ctrlで10ずつ調整します。"));
                             ui.end_row();
                         }
                     });
@@ -633,20 +757,80 @@ impl EditorApp {
                 draft.end = format!("{:04X}", UNICODE_PRESETS[draft.preset].end);
             }
             ui.add_enabled_ui(!draft.custom, |ui| {
-                egui::ComboBox::from_id_salt("new-range-preset")
-                    .width(360.0)
-                    .selected_text(UNICODE_PRESETS[draft.preset].name)
-                    .show_ui(ui, |ui| {
-                        for (index, preset) in UNICODE_PRESETS.iter().enumerate() {
-                            if ui
-                                .selectable_value(&mut draft.preset, index, preset.name)
-                                .clicked()
-                            {
-                                draft.start = format!("{:04X}", preset.start);
-                                draft.end = format!("{:04X}", preset.end);
+                let selected_name = UNICODE_PRESETS[draft.preset].name;
+                let button = ui.add_sized(
+                    [420.0, 32.0],
+                    egui::Button::new((
+                        selected_name.atom_shrink(true),
+                        egui::Atom::grow(),
+                        icon_label('\u{e5c5}', ""),
+                    )),
+                );
+                if button.clicked() {
+                    draft.focus_preset_search = true;
+                }
+                let mut chosen = None;
+                egui::Popup::menu(&button)
+                    .id(egui::Id::new("new-range-preset"))
+                    .width(button.rect.width())
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .show(|ui| {
+                        // The common blocks stay above the independently scrolling full list.
+                        ui.spacing_mut().item_spacing.y = 4.0;
+                        let search = ui.add_sized(
+                            [ui.available_width(), 28.0],
+                            egui::TextEdit::singleline(&mut draft.preset_search)
+                                .hint_text("ブロック名 / U+コードポイントで検索"),
+                        );
+                        if draft.focus_preset_search {
+                            search.request_focus();
+                            draft.focus_preset_search = false;
+                        }
+                        ui.weak("よく使う範囲");
+                        for (index, _) in UNICODE_PRESETS
+                            .iter()
+                            .enumerate()
+                            .take_while(|(_, preset)| preset.frequent)
+                        {
+                            if preset_row(ui, index, draft.preset).clicked() {
+                                chosen = Some(index);
+                                ui.close();
                             }
                         }
+                        ui.separator();
+                        let matches: Vec<_> = UNICODE_PRESETS
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, preset)| {
+                                !preset.frequent && preset.matches(&draft.preset_search)
+                            })
+                            .map(|(index, _)| index)
+                            .collect();
+                        ui.weak(format!("その他のブロック · {}件", matches.len()));
+                        let mut scroll = egui::ScrollArea::vertical()
+                            .id_salt("unicode-blocks")
+                            .max_height(156.0);
+                        if search.changed() {
+                            scroll = scroll.vertical_scroll_offset(0.0);
+                        }
+                        scroll.show(ui, |ui| {
+                            if matches.is_empty() {
+                                ui.weak("一致するブロックはありません。");
+                            }
+                            for index in matches {
+                                if preset_row(ui, index, draft.preset).clicked() {
+                                    chosen = Some(index);
+                                    ui.close();
+                                }
+                            }
+                        });
                     });
+                if let Some(index) = chosen {
+                    draft.preset = index;
+                    let preset = &UNICODE_PRESETS[index];
+                    draft.start = format!("{:04X}", preset.start);
+                    draft.end = format!("{:04X}", preset.end);
+                }
             });
             ui.add_space(12.0);
             ui.radio_value(&mut draft.custom, true, "カスタム");
@@ -681,7 +865,7 @@ impl EditorApp {
                     for (index, row) in missing {
                         if ui.button(row.label).clicked() {
                             self.model.restore_category(index);
-                            self.load_fields();
+                            self.reset_selection();
                             close = true;
                         }
                     }
@@ -705,7 +889,7 @@ impl EditorApp {
                     });
                     match result {
                         Ok(()) => {
-                            self.load_fields();
+                            self.reset_selection();
                             close = true;
                         }
                         Err(e) => draft.error = e,
@@ -761,6 +945,7 @@ impl eframe::App for EditorApp {
             .default_width(260.0)
             .min_width(220.0)
             .max_width(360.0)
+            .show_separator_line(false)
             .show(ctx, |ui| {
                 self.profiles_ui(ui);
             });
@@ -772,7 +957,9 @@ impl eframe::App for EditorApp {
                     self.fonts_ui(ui);
                 });
         });
+        let old_font = self.font.clone();
         self.font_picker.show(ctx, &self.fonts, &mut self.font);
+        self.changed_fields[0] |= self.font != old_font;
         self.range_dialog_ui(ctx);
         status_ui
             .add(egui::Label::new(self.hover_help.as_deref().unwrap_or(&self.status)).truncate());
@@ -812,6 +999,8 @@ pub fn show_editor(
         font_picker: FontPicker::default(),
         unit: MetricUnit::Percent,
         values: [100.0, 0.0, 0.0, 100.0, 100.0],
+        selection: RowSelection::default(),
+        changed_fields: [false; 7],
         editing_profile: false,
         focus_profile_editor: false,
         range_dialog: None,
@@ -825,16 +1014,18 @@ pub fn show_editor(
         status: "編集中の変更は「適用」でプレビューに反映します。".to_owned(),
         hover_help: None,
     };
-    app.load_fields();
+    app.reset_selection();
     let _ = owner;
+    let _dpi_scope = ThreadDpiScope::enter();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 960.0])
             .with_min_inner_size([960.0, 720.0]),
         event_loop_builder: Some(Box::new(|builder| {
-            builder.with_any_thread(true);
+            builder.with_any_thread(true).with_dpi_aware(false);
         })),
         run_and_return: true,
+        dithering: false,
         ..Default::default()
     };
     eframe::run_native(
@@ -845,6 +1036,7 @@ pub fn show_editor(
             visuals.override_text_color = Some(egui::Color32::from_rgb(224, 228, 234));
             cc.egui_ctx.set_visuals(visuals);
             cc.egui_ctx.style_mut(|style| {
+                style.animation_time = 0.0;
                 style.spacing.item_spacing = egui::vec2(8.0, 10.0);
                 style.spacing.button_padding = egui::vec2(8.0, 5.0);
                 style
@@ -915,4 +1107,66 @@ pub fn show_editor(
         .map_err(|_| "保存状態を取得できません。")?
         .clone();
     Ok(document)
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    #[test]
+    fn profile_header_leaves_visible_space_for_rows_at_every_sidebar_width() {
+        for width in [220.0, 260.0, 360.0] {
+            let ctx = egui::Context::default();
+            let mut fonts = egui::FontDefinitions::default();
+            fonts.families.insert(
+                egui::FontFamily::Name("MaterialIcons".into()),
+                fonts.families[&egui::FontFamily::Proportional].clone(),
+            );
+            ctx.set_fonts(fonts);
+            ctx.style_mut(|style| {
+                style.spacing.item_spacing = egui::vec2(8.0, 10.0);
+                style
+                    .text_styles
+                    .insert(egui::TextStyle::Heading, egui::FontId::proportional(24.0));
+            });
+            for _ in 0..2 {
+                let _ = ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(960.0, 720.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::SidePanel::left("profiles")
+                            .exact_width(width)
+                            .show(ctx, |ui| {
+                                let header = profile_header(ui);
+                                assert!(
+                                    header.response.rect.height() <= 48.0,
+                                    "{:?}",
+                                    header.response.rect
+                                );
+                                ui.add_space(12.0);
+                                let space = ui.available_height();
+                                assert!(space > 600.0, "{space}");
+                                egui::ScrollArea::vertical()
+                                    .max_height(space)
+                                    .show(ui, |ui| {
+                                        for name in ["default", "sample"] {
+                                            let row = ui.add_sized(
+                                                [ui.available_width(), 32.0],
+                                                left_selectable(false, name),
+                                            );
+                                            assert!(row.rect.bottom() < 150.0, "{:?}", row.rect);
+                                            assert!(ui.clip_rect().contains_rect(row.rect));
+                                        }
+                                    });
+                            });
+                    },
+                );
+            }
+        }
+    }
 }

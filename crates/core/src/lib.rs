@@ -256,61 +256,31 @@ impl UnicodeRange {
 #[derive(Clone, Copy, Debug)]
 pub struct UnicodePreset {
     pub name: &'static str,
+    /// Official Unicode block name, also used for searching.
+    pub block_name: &'static str,
     pub start: u32,
     pub end: u32,
+    pub frequent: bool,
 }
-pub const UNICODE_PRESETS: &[UnicodePreset] = &[
-    UnicodePreset {
-        name: "Basic Latin",
-        start: 0x0000,
-        end: 0x007F,
-    },
-    UnicodePreset {
-        name: "Latin-1 Supplement",
-        start: 0x0080,
-        end: 0x00FF,
-    },
-    UnicodePreset {
-        name: "ひらがな",
-        start: 0x3040,
-        end: 0x309F,
-    },
-    UnicodePreset {
-        name: "カタカナ",
-        start: 0x30A0,
-        end: 0x30FF,
-    },
-    UnicodePreset {
-        name: "CJK統合漢字",
-        start: 0x4E00,
-        end: 0x9FFF,
-    },
-    UnicodePreset {
-        name: "CJK統合漢字拡張A",
-        start: 0x3400,
-        end: 0x4DBF,
-    },
-    UnicodePreset {
-        name: "CJK統合漢字拡張B",
-        start: 0x20000,
-        end: 0x2A6DF,
-    },
-    UnicodePreset {
-        name: "CJK記号・句読点",
-        start: 0x3000,
-        end: 0x303F,
-    },
-    UnicodePreset {
-        name: "半角・全角形",
-        start: 0xFF00,
-        end: 0xFFEF,
-    },
-    UnicodePreset {
-        name: "絵文字 (Emoticons)",
-        start: 0x1F600,
-        end: 0x1F64F,
-    },
-];
+impl UnicodePreset {
+    /// Search Japanese/English names or a code point within this block.
+    pub fn matches(&self, query: &str) -> bool {
+        let query = query.trim();
+        if query.is_empty() {
+            return true;
+        }
+        if let Ok(codepoint) = parse_codepoint(query) {
+            return (self.start..=self.end).contains(&codepoint);
+        }
+        let names = format!("{} {}", self.name, self.block_name).to_lowercase();
+        query
+            .to_lowercase()
+            .split_whitespace()
+            .all(|word| names.contains(word))
+    }
+}
+mod unicode_presets;
+pub use unicode_presets::UNICODE_PRESETS;
 
 /// Accept hexadecimal values with optional U+ or 0x prefix.
 pub fn parse_codepoint(value: &str) -> Result<u32, String> {
@@ -797,5 +767,74 @@ mod tests {
                 .is_ok()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod unicode_preset_tests {
+    use super::*;
+
+    #[test]
+    fn presets_cover_official_unicode_blocks_without_surrogates_or_duplicates() {
+        let mut official: Vec<_> = include_str!("../../../resource/unicode/Blocks-17.0.0.txt")
+            .lines()
+            .filter_map(|line| {
+                let (range, name) = line.split_once("; ")?;
+                let (start, end) = range.split_once("..")?;
+                let start = u32::from_str_radix(start, 16).ok()?;
+                let end = u32::from_str_radix(end, 16).ok()?;
+                if (0xD800..=0xDFFF).contains(&start) {
+                    return None;
+                }
+                Some((start, end, name))
+            })
+            .collect();
+        let mut actual: Vec<_> = UNICODE_PRESETS
+            .iter()
+            .map(|preset| (preset.start, preset.end, preset.block_name))
+            .collect();
+        official.sort_unstable();
+        actual.sort_unstable();
+        assert_eq!(actual, official);
+        assert_eq!(actual.len(), 343);
+        assert!(actual.windows(2).all(|pair| pair[0].1 < pair[1].0));
+    }
+
+    #[test]
+    fn common_blocks_are_pinned_and_search_accepts_both_names_and_codepoints() {
+        let names: Vec<_> = UNICODE_PRESETS
+            .iter()
+            .take_while(|p| p.frequent)
+            .map(|p| p.block_name)
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "CJK Unified Ideographs",
+                "Hiragana",
+                "Katakana",
+                "Basic Latin",
+                "Halfwidth and Fullwidth Forms"
+            ]
+        );
+        assert!(UNICODE_PRESETS[names.len()..].iter().all(|p| !p.frequent));
+        assert!(
+            UNICODE_PRESETS[names.len()..]
+                .windows(2)
+                .all(|pair| pair[0].end < pair[1].start)
+        );
+        let hiragana = &UNICODE_PRESETS[1];
+        for query in ["ひらがな", " HIRAGANA ", "U+3042", "0x3042", "3042", ""] {
+            assert!(hiragana.matches(query), "{query}");
+        }
+        assert!(!hiragana.matches("U+30A2"));
+        assert!(!hiragana.matches("Katakana"));
+        let extension_j = UNICODE_PRESETS
+            .iter()
+            .find(|p| p.block_name.ends_with("Ideographs Extension J"))
+            .unwrap();
+        assert_eq!((extension_j.start, extension_j.end), (0x323B0, 0x3347F));
+        assert!(extension_j.matches("漢字 拡張J"));
+        assert!(extension_j.matches("CJK Extension J"));
     }
 }
