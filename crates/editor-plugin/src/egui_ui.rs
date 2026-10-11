@@ -19,6 +19,42 @@ use font_picker::FontPicker;
 mod selection;
 use selection::RowSelection;
 
+// Only the preview source field uses this family; UI labels keep Yu Gothic UI.
+fn preview_input_fonts(definitions: &mut egui::FontDefinitions) {
+    let mut family = Vec::new();
+    let system_fonts = std::env::var_os("WINDIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("C:/Windows"))
+        .join("Fonts");
+    // Nirmala covers Indic scripts (including Odia). Additional faces cover
+    // Arabic/Hebrew, Southeast Asian scripts, African scripts and CJK.
+    for file in [
+        "Nirmala.ttc",
+        "segoeui.ttf",
+        "LeelawUI.ttf",
+        "ebrima.ttf",
+        "gadugi.ttf",
+        "sylfaen.ttf",
+        "malgun.ttf",
+        "msjh.ttc",
+        "msyh.ttc",
+        "seguisym.ttf",
+        "seguihis.ttf",
+    ] {
+        if let Ok(bytes) = std::fs::read(system_fonts.join(file)) {
+            let name = format!("PreviewInput/{file}");
+            definitions
+                .font_data
+                .insert(name.clone(), Arc::new(egui::FontData::from_owned(bytes)));
+            family.push(name);
+        }
+    }
+    family.extend(definitions.families[&egui::FontFamily::Proportional].clone());
+    definitions
+        .families
+        .insert(egui::FontFamily::Name("PreviewInput".into()), family);
+}
+
 // Google Material Icons (Apache-2.0; bundled LICENSE.txt).
 fn icon_label(icon: char, label: &str) -> egui::WidgetText {
     material_label(icon, label, "MaterialIcons")
@@ -96,6 +132,231 @@ fn preset_row(ui: &mut egui::Ui, index: usize, selected: usize) -> egui::Respons
             &format!("{}  U+{:04X}–{:04X}", preset.name, preset.start, preset.end),
         ),
     )
+}
+
+fn unicode_preset_list(
+    ui: &mut egui::Ui,
+    query: &str,
+    selected: usize,
+    reset_scroll: bool,
+) -> egui::scroll_area::ScrollAreaOutput<Option<usize>> {
+    let matches: Vec<_> = UNICODE_PRESETS
+        .iter()
+        .enumerate()
+        .filter(|(_, preset)| preset.matches(query))
+        .map(|(index, _)| index)
+        .collect();
+    let mut scroll = egui::ScrollArea::vertical()
+        .id_salt("unicode-blocks")
+        .max_height(156.0)
+        // Popup Areas reuse their previous size. Allow this list to grow again
+        // after a search shrinks it; auto_shrink still fits short result sets.
+        .min_scrolled_height(156.0);
+    if reset_scroll {
+        scroll = scroll.vertical_scroll_offset(0.0);
+    }
+    scroll.show(ui, |ui| {
+        let mut chosen = None;
+        if matches.is_empty() {
+            ui.weak("一致するブロックはありません。");
+        }
+        let mut section = None;
+        for index in matches {
+            let frequent = UNICODE_PRESETS[index].frequent;
+            if section != Some(frequent) {
+                if section.is_some() {
+                    ui.separator();
+                }
+                ui.weak(if frequent {
+                    "よく使う範囲"
+                } else {
+                    "その他のブロック"
+                });
+                section = Some(frequent);
+            }
+            if preset_row(ui, index, selected).clicked() {
+                chosen = Some(index);
+                ui.close();
+            }
+        }
+        chosen
+    })
+}
+
+const FONT_FIELD_HEIGHT: f32 = 32.0;
+
+fn font_name_input(ui: &mut egui::Ui, font: &mut String, width: f32) -> egui::Response {
+    ui.add_sized(
+        [width, FONT_FIELD_HEIGHT],
+        egui::TextEdit::singleline(font)
+            .hint_text("フォント名を入力")
+            .desired_width(width)
+            .min_size(egui::vec2(width, FONT_FIELD_HEIGHT))
+            .vertical_align(egui::Align::Center),
+    )
+}
+
+const LIGATURE_CHECK: char = '\u{e5ca}'; // Material check
+const LIGATURE_HELP: &str = "ONでこの範囲のリガチャを有効にします（初期ON）。OFFは強制解除し、接続形・結合記号・字間も変わる場合があります。anm2側の強制解除ONは全範囲に優先します。";
+const FONT_TABLE_TITLES: [&str; 3] = ["名前 / 分類", "Unicode範囲", "フォント"];
+
+fn font_table_cell_rects(row: egui::Rect) -> [egui::Rect; 3] {
+    let edges = [
+        row.left(),
+        row.left() + row.width() * 0.22,
+        row.left() + row.width() * 0.52,
+        row.right() - 44.0,
+    ];
+    std::array::from_fn(|index| {
+        egui::Rect::from_min_max(
+            egui::pos2(edges[index] + 8.0, row.top() + 8.0),
+            egui::pos2(edges[index + 1] - 8.0, row.bottom() - 8.0),
+        )
+    })
+}
+
+fn paint_font_table_cells(ui: &egui::Ui, row: egui::Rect, cells: [&str; 3], color: egui::Color32) {
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    for (text, rect) in cells.into_iter().zip(font_table_cell_rects(row)) {
+        let mut job =
+            egui::text::LayoutJob::simple_singleline(text.to_owned(), font.clone(), color);
+        job.wrap.max_width = rect.width().max(0.0);
+        job.wrap.max_rows = 1;
+        job.wrap.overflow_character = Some('…');
+        let galley = ui.painter().layout_job(job);
+        let pos = egui::pos2(rect.left(), rect.center().y - galley.size().y / 2.0);
+        ui.painter()
+            .with_clip_rect(ui.clip_rect().intersect(rect))
+            .galley(pos, galley, color);
+    }
+}
+
+fn paint_font_table_rules(ui: &egui::Ui, row: egui::Rect, separator: bool) {
+    let stroke = egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(70, 74, 79));
+    for factor in [0.22, 0.52] {
+        ui.painter()
+            .vline(row.left() + row.width() * factor, row.y_range(), stroke);
+    }
+    ui.painter()
+        .vline(row.right() - 44.0, row.y_range(), stroke);
+    if separator {
+        ui.painter()
+            .hline(row.x_range(), row.bottom() - 0.5, stroke);
+    }
+}
+
+fn font_table_header(ui: &mut egui::Ui) {
+    let height = ui.text_style_height(&egui::TextStyle::Body).max(24.0) + 16.0;
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), height),
+        egui::Sense::hover(),
+    );
+    ui.painter()
+        .rect_filled(rect, 0.0, egui::Color32::from_rgb(60, 64, 69));
+    paint_font_table_cells(
+        ui,
+        rect,
+        FONT_TABLE_TITLES,
+        ui.visuals().strong_text_color(),
+    );
+    paint_link(
+        ui.painter(),
+        egui::Rect::from_center_size(
+            egui::pos2(rect.right() - 22.0, rect.center().y),
+            egui::vec2(20.0, 20.0),
+        ),
+        ui.visuals().weak_text_color(),
+    );
+    paint_font_table_rules(ui, rect, true);
+}
+
+fn font_range_row(
+    ui: &mut egui::Ui,
+    selected: bool,
+    cells: [&str; 3],
+    separator: bool,
+    ligatures_enabled: bool,
+) -> egui::Response {
+    // Include every cell, padding and rule in one hit target.
+    let height = ui.text_style_height(&egui::TextStyle::Body).max(24.0) + 16.0;
+    let response = ui.add_sized(
+        [ui.available_width(), height],
+        egui::Button::selectable(selected, "").corner_radius(0.0),
+    );
+    let color = if selected {
+        ui.visuals().selection.stroke.color
+    } else {
+        ui.visuals().text_color()
+    };
+    paint_font_table_cells(ui, response.rect, cells, color);
+    if ligatures_enabled {
+        paint_ligature_icon(ui, response.rect, color);
+    }
+    paint_font_table_rules(ui, response.rect, separator);
+    response
+}
+
+fn paint_ligature_icon(ui: &egui::Ui, row: egui::Rect, color: egui::Color32) {
+    let rect = egui::Rect::from_min_max(
+        egui::pos2(row.right() - 44.0, row.top()),
+        row.right_bottom(),
+    );
+    ui.painter()
+        .with_clip_rect(ui.clip_rect().intersect(rect))
+        .text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            LIGATURE_CHECK,
+            egui::FontId::new(20.0, egui::FontFamily::Name("MaterialIcons".into())),
+            color,
+        );
+}
+
+// Lucide / Feather Link (MIT), resource/lucide/LICENSE.txt.
+// The two diagonal, interlocking paths use a 24-unit view box.
+fn paint_link(painter: &egui::Painter, rect: egui::Rect, color: egui::Color32) {
+    let mut path = vec![egui::pos2(10.0, 13.0)];
+    let inner_center = egui::pos2(14.004, 10.005);
+    let start_angle = (13.0_f32 - inner_center.y).atan2(10.0 - inner_center.x);
+    let end_angle = (13.54_f32 - inner_center.y).atan2(17.54 - inner_center.x);
+    for step in 1..=24 {
+        let angle = start_angle + (end_angle - start_angle) * step as f32 / 24.0;
+        path.push(inner_center + egui::vec2(5.0 * angle.cos(), 5.0 * angle.sin()));
+    }
+    path.push(egui::pos2(20.54, 10.54));
+    for step in 1..=32 {
+        let angle = std::f32::consts::FRAC_PI_4 - std::f32::consts::PI * step as f32 / 32.0;
+        path.push(egui::pos2(17.005, 7.005) + egui::vec2(5.0 * angle.cos(), 5.0 * angle.sin()));
+    }
+    path.push(egui::pos2(11.75, 5.18));
+    let stroke = egui::Stroke::new(rect.width() / 12.0, color);
+    for reflected in [false, true] {
+        let points: Vec<_> = path
+            .iter()
+            .map(|p| {
+                let p = if reflected {
+                    egui::pos2(24.0 - p.x, 24.0 - p.y)
+                } else {
+                    *p
+                };
+                rect.min + egui::vec2(p.x / 24.0 * rect.width(), p.y / 24.0 * rect.height())
+            })
+            .collect();
+        for end in [points[0], *points.last().unwrap()] {
+            painter.circle_filled(end, stroke.width / 2.0, color);
+        }
+        painter.add(egui::epaint::PathShape::line(points, stroke));
+    }
+}
+
+fn profile_panel() -> egui::SidePanel {
+    egui::SidePanel::left("profiles")
+        // egui still paints a resize line on hover with show_separator_line(false).
+        .resizable(false)
+        .default_width(260.0)
+        .min_width(220.0)
+        .max_width(360.0)
+        .show_separator_line(false)
 }
 
 fn metric_input(ui: &mut egui::Ui, value: &mut f64, index: usize) -> egui::Response {
@@ -184,7 +445,8 @@ struct EditorApp {
     unit: MetricUnit,
     values: [f64; 5],
     selection: RowSelection,
-    changed_fields: [bool; 7],
+    changed_fields: [bool; 8],
+    ligatures_enabled: bool,
     editing_profile: bool,
     focus_profile_editor: bool,
     range_dialog: Option<RangeDialog>,
@@ -211,7 +473,8 @@ impl EditorApp {
         self.font = adjustment.font_family.clone();
         self.unit = adjustment.metric_unit;
         self.values = adjustment_values(adjustment);
-        self.changed_fields = [false; 7];
+        self.ligatures_enabled = !adjustment.disable_ligatures;
+        self.changed_fields = [false; 8];
         if let Some(range) = self.model.selected_range() {
             self.start = format!("{:04X}", range.start);
             self.end = format!("{:04X}", range.end);
@@ -240,6 +503,7 @@ impl EditorApp {
             let patch = AdjustmentPatch {
                 font_family: self.changed_fields[0].then(|| self.font.clone()),
                 metric_unit: self.changed_fields[1].then_some(self.unit),
+                disable_ligatures: self.changed_fields[7].then_some(!self.ligatures_enabled),
                 values: std::array::from_fn(|index| {
                     (self.changed_fields[index + 2] || (index < 3 && self.changed_fields[1]))
                         .then_some(self.values[index])
@@ -249,12 +513,12 @@ impl EditorApp {
         }
         self.preview_dirty |= self.model.document() != candidate.document();
         self.model = candidate;
-        self.changed_fields = [false; 7];
+        self.changed_fields = [false; 8];
         Ok(())
     }
     fn save(&mut self) -> Result<(), String> {
         self.apply()?;
-        storage::save_document_with_selector(&self.path, self.model.document())?;
+        storage::save_document(&self.path, self.model.document())?;
         *self
             .saved
             .lock()
@@ -266,11 +530,11 @@ impl EditorApp {
             .stage_fonts_for_next_launch()?;
         self.status = if outcome.added_file_count > 0 {
             format!(
-                "保存しました。追加フォント{}件とanm2の選択肢はAviUtl2の再起動後に反映されます。",
+                "保存しました。追加フォント{}件はAviUtl2の再起動後に反映されます。",
                 outcome.added_file_count
             )
         } else {
-            "保存しました。anm2の選択肢は再起動後に反映されます。".to_owned()
+            "保存しました。".to_owned()
         };
         Ok(())
     }
@@ -480,6 +744,10 @@ impl EditorApp {
             );
             let sample = ui.add(
                 egui::TextEdit::singleline(&mut self.sample)
+                    .font(egui::FontId::new(
+                        17.0,
+                        egui::FontFamily::Name("PreviewInput".into()),
+                    ))
                     .desired_width((ui.available_width() - 120.0).min(460.0)),
             );
             if self
@@ -493,12 +761,22 @@ impl EditorApp {
             }
             let guides = ui.checkbox(&mut self.guides, "ガイド");
             if self
-                .explain(guides, "文字の境界とベースラインのガイドを表示します。")
+                .explain(
+                    guides,
+                    "シアン：グリフの実寸、マゼンタ：フォントの字枠、赤：ベースライン。",
+                )
                 .changed()
             {
                 self.preview_dirty = true;
             }
         });
+        if self.guides {
+            ui.horizontal(|ui| {
+                ui.colored_label(egui::Color32::CYAN, "グリフ境界（実寸）");
+                ui.colored_label(egui::Color32::MAGENTA, "テキストサイズ（字枠）");
+                ui.colored_label(egui::Color32::RED, "ベースライン");
+            });
+        }
         self.update_preview(ctx);
         if let Some(texture) = &self.preview {
             ui.add(egui::Image::new(texture).max_width(ui.available_width()));
@@ -594,26 +872,28 @@ impl EditorApp {
                     .max_height(height)
                     .min_scrolled_height(height)
                     .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        font_table_header(ui);
                         if self.model.table_row_count() == 0 {
                             ui.weak("範囲がありません。「追加」から登録してください。");
                         }
-                        ui.spacing_mut().item_spacing.y = 4.0;
                         for row in 0..self.model.table_row_count() {
-                            if row > 0 {
-                                ui.add(egui::Separator::default().spacing(1.0));
-                            }
                             let adjustment = self.model.adjustment_for_table_row(row).unwrap();
                             let font = if adjustment.font_family.is_empty() {
                                 "（変更なし）"
                             } else {
                                 &adjustment.font_family
                             };
-                            let label = format!("{}    {}", self.model.table_row_label(row), font);
-                            let response = ui.add_sized(
-                                [ui.available_width(), 32.0],
-                                left_selectable(self.selection.rows.contains(&row), &label),
+                            let name = self.model.table_row_name(row);
+                            let range = self.model.table_row_range_text(row);
+                            let response = font_range_row(
+                                ui, self.selection.rows.contains(&row), [name, &range, font],
+                                true, !adjustment.disable_ligatures,
                             );
                             self.explain(response.clone(), "カスタム範囲を優先し、重複時は上から最初に一致した範囲を使います。Shiftで範囲選択、Ctrlで追加・解除。通常クリックで複数選択を解除し、その行を編集します。");
+                            if response.contains_pointer() && ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| p.x >= response.rect.right() - 44.0) {
+                                self.hover_help = Some(LIGATURE_HELP.to_owned());
+                            }
                             if self.scroll_selected_row && row == self.model.selected_table_row() {
                                 response.scroll_to_me(Some(egui::Align::Center));
                                 self.scroll_selected_row = false;
@@ -692,8 +972,7 @@ impl EditorApp {
             ui.scope(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
                 let width = (ui.available_width() - 140.0).clamp(160.0, 420.0);
-                let input = ui.add_sized([width, 32.0],
-                    egui::TextEdit::singleline(&mut self.font).hint_text("フォント名を入力"));
+                let input = font_name_input(ui, &mut self.font, width);
                 self.changed_fields[0] |= input.changed();
                 self.explain(input.clone(), "フォント名は直接入力、または右端の一覧から選択できます。空欄はフォントを変更しません。");
                 let button = ui.add_sized([36.0, 32.0], egui::Button::new(icon_label('', "")));
@@ -736,6 +1015,18 @@ impl EditorApp {
                             self.explain(response, &format!("{help} ホイールで1ずつ、Shiftで0.1ずつ、Ctrlで10ずつ調整します。"));
                             ui.end_row();
                         }
+                        if column == 1 {
+                            let label = ui.horizontal(|ui| {
+                                let (rect, _) = ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover());
+                                paint_link(ui.painter(), rect, ui.visuals().text_color());
+                                ui.label("リガチャ");
+                            }).response;
+                            self.explain(label, LIGATURE_HELP);
+                            let check = ui.checkbox(&mut self.ligatures_enabled, "有効");
+                            self.changed_fields[7] |= check.changed();
+                            self.explain(check, LIGATURE_HELP);
+                            ui.end_row();
+                        }
                     });
             }
         });
@@ -775,7 +1066,6 @@ impl EditorApp {
                     .width(button.rect.width())
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                     .show(|ui| {
-                        // The common blocks stay above the independently scrolling full list.
                         ui.spacing_mut().item_spacing.y = 4.0;
                         let search = ui.add_sized(
                             [ui.available_width(), 28.0],
@@ -786,44 +1076,13 @@ impl EditorApp {
                             search.request_focus();
                             draft.focus_preset_search = false;
                         }
-                        ui.weak("よく使う範囲");
-                        for (index, _) in UNICODE_PRESETS
-                            .iter()
-                            .enumerate()
-                            .take_while(|(_, preset)| preset.frequent)
-                        {
-                            if preset_row(ui, index, draft.preset).clicked() {
-                                chosen = Some(index);
-                                ui.close();
-                            }
-                        }
-                        ui.separator();
-                        let matches: Vec<_> = UNICODE_PRESETS
-                            .iter()
-                            .enumerate()
-                            .filter(|(_, preset)| {
-                                !preset.frequent && preset.matches(&draft.preset_search)
-                            })
-                            .map(|(index, _)| index)
-                            .collect();
-                        ui.weak(format!("その他のブロック · {}件", matches.len()));
-                        let mut scroll = egui::ScrollArea::vertical()
-                            .id_salt("unicode-blocks")
-                            .max_height(156.0);
-                        if search.changed() {
-                            scroll = scroll.vertical_scroll_offset(0.0);
-                        }
-                        scroll.show(ui, |ui| {
-                            if matches.is_empty() {
-                                ui.weak("一致するブロックはありません。");
-                            }
-                            for index in matches {
-                                if preset_row(ui, index, draft.preset).clicked() {
-                                    chosen = Some(index);
-                                    ui.close();
-                                }
-                            }
-                        });
+                        chosen = unicode_preset_list(
+                            ui,
+                            &draft.preset_search,
+                            draft.preset,
+                            search.changed(),
+                        )
+                        .inner;
                     });
                 if let Some(index) = chosen {
                     draft.preset = index;
@@ -914,19 +1173,37 @@ impl eframe::App for EditorApp {
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 ui.heading("合成フォント");
-                ui.weak("egui 試験版");
+                ui.weak("β");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if self.explain(ui.button(icon_label('\u{e5cd}', "キャンセル")), "保存していない変更を破棄して閉じます。").clicked() {
+                    if self
+                        .explain(
+                            ui.button(icon_label('\u{e5cd}', "キャンセル")),
+                            "保存していない変更を破棄して閉じます。",
+                        )
+                        .clicked()
+                    {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
-                    if self.explain(ui.button(icon_label('\u{e876}', "保存して閉じる")), "プロファイルを保存して設定画面を閉じます。").clicked() {
+                    if self
+                        .explain(
+                            ui.button(icon_label('\u{e876}', "保存して閉じる")),
+                            "プロファイルを保存して設定画面を閉じます。",
+                        )
+                        .clicked()
+                    {
                         match self.save() {
                             Ok(()) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
                             Err(e) => self.status = e,
                         }
                     }
-                    if self.explain(ui.button(icon_label('\u{e161}', "保存")), "プロファイルを保存します。anm2の選択肢の変更はAviUtl2の再起動後に反映されます。").clicked()
-                        && let Err(e) = self.save() {
+                    if self
+                        .explain(
+                            ui.button(icon_label('\u{e161}', "保存")),
+                            "プロファイルを保存します。描画時に約1秒間隔で設定を読み直します。",
+                        )
+                        .clicked()
+                        && let Err(e) = self.save()
+                    {
                         self.status = e;
                     }
                 });
@@ -940,15 +1217,9 @@ impl eframe::App for EditorApp {
                 ui.new_child(egui::UiBuilder::new().max_rect(rect))
             })
             .inner;
-        egui::SidePanel::left("profiles")
-            .resizable(true)
-            .default_width(260.0)
-            .min_width(220.0)
-            .max_width(360.0)
-            .show_separator_line(false)
-            .show(ctx, |ui| {
-                self.profiles_ui(ui);
-            });
+        profile_panel().show(ctx, |ui| {
+            self.profiles_ui(ui);
+        });
         egui::CentralPanel::default().show(ctx, |ui| {
             self.preview_ui(ui, ctx);
             egui::ScrollArea::vertical()
@@ -1000,7 +1271,8 @@ pub fn show_editor(
         unit: MetricUnit::Percent,
         values: [100.0, 0.0, 0.0, 100.0, 100.0],
         selection: RowSelection::default(),
-        changed_fields: [false; 7],
+        changed_fields: [false; 8],
+        ligatures_enabled: true,
         editing_profile: false,
         focus_profile_editor: false,
         range_dialog: None,
@@ -1019,6 +1291,10 @@ pub fn show_editor(
     let _dpi_scope = ThreadDpiScope::enter();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
+            // eframe 0.33 sets its default icon on GetActiveWindow(), which can
+            // still be the host during startup. The empty icon explicitly disables
+            // AppTitleIconSetter so it never sends WM_SETICON to AviUtl2.
+            .with_icon(egui::IconData::default())
             .with_inner_size([1280.0, 960.0])
             .with_min_inner_size([960.0, 720.0]),
         event_loop_builder: Some(Box::new(|builder| {
@@ -1029,7 +1305,7 @@ pub fn show_editor(
         ..Default::default()
     };
     eframe::run_native(
-        "合成フォント — egui 試験版",
+        "合成フォント — β",
         options,
         Box::new(move |cc| {
             let mut visuals = egui::Visuals::dark();
@@ -1075,6 +1351,7 @@ pub fn show_editor(
                     break;
                 }
             }
+            preview_input_fonts(&mut definitions);
             definitions.font_data.insert(
                 "MaterialIcons".to_owned(),
                 Arc::new(egui::FontData::from_static(include_bytes!(
@@ -1112,6 +1389,278 @@ pub fn show_editor(
 #[cfg(test)]
 mod layout_tests {
     use super::*;
+    #[test]
+    fn numeric_wheel_adjusts_hovered_field_and_consumes_parent_scroll() {
+        for (index, initial, delta, modifiers, expected) in [
+            (0, 100.0, 1.0, egui::Modifiers::NONE, 101.0),
+            (1, 0.0, -1.0, egui::Modifiers::SHIFT, -0.1),
+            (2, 0.0, 2.0, egui::Modifiers::CTRL, 20.0),
+            (3, 0.1, -1.0, egui::Modifiers::NONE, 0.1),
+        ] {
+            let ctx = egui::Context::default();
+            let mut value = initial;
+            let mut rect = egui::Rect::NOTHING;
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    rect = metric_input(ui, &mut value, index).rect;
+                });
+            });
+            let _ = ctx.run(
+                egui::RawInput {
+                    modifiers,
+                    events: vec![
+                        egui::Event::PointerMoved(rect.center()),
+                        egui::Event::MouseWheel {
+                            unit: egui::MouseWheelUnit::Line,
+                            delta: egui::vec2(0.0, delta),
+                            modifiers,
+                        },
+                    ],
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        metric_input(ui, &mut value, index);
+                        assert_eq!(ui.input(|i| i.raw_scroll_delta.y), 0.0);
+                        assert_eq!(ui.input(|i| i.smooth_scroll_delta.y), 0.0);
+                        assert!(!ui.input(|i| {
+                            i.events
+                                .iter()
+                                .any(|e| matches!(e, egui::Event::MouseWheel { .. }))
+                        }));
+                    });
+                },
+            );
+            assert_eq!(value, expected);
+        }
+    }
+
+    #[test]
+    fn preset_popup_grows_again_after_codepoint_search_is_broadened() {
+        let ctx = egui::Context::default();
+        for _ in 0..2 {
+            for query in ["U+0B33", "U+10FFFF", "", "Latin", "no matching block", ""] {
+                let mut height = 0.0;
+                for _ in 0..3 {
+                    let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            let button = ui.add_sized([420.0, 32.0], egui::Button::new("preset"));
+                            egui::Popup::menu(&button)
+                                .id(egui::Id::new("preset-search-regression"))
+                                .width(button.rect.width())
+                                .open(true)
+                                .show(|ui| {
+                                    ui.spacing_mut().item_spacing.y = 4.0;
+                                    ui.add_sized(
+                                        [ui.available_width(), 28.0],
+                                        egui::TextEdit::singleline(&mut query.to_owned()),
+                                    );
+                                    let list = unicode_preset_list(ui, query, 0, true);
+                                    height = list.inner_rect.height().min(list.content_size.y);
+                                });
+                        });
+                    });
+                }
+                if matches!(query, "Latin" | "") {
+                    assert!(
+                        (height - 156.0).abs() < 1.0,
+                        "query={query:?}, height={height}"
+                    );
+                } else {
+                    assert!(height < 100.0, "query={query:?}, height={height}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn font_name_input_matches_dropdown_height_and_edges() {
+        let ctx = egui::Context::default();
+        for _ in 0..2 {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.horizontal_top(|ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        let input = font_name_input(ui, &mut "Meiryo UI".into(), 240.0);
+                        let button =
+                            ui.add_sized([36.0, FONT_FIELD_HEIGHT], egui::Button::new("v"));
+                        assert_eq!(input.rect.width(), 240.0);
+                        assert_eq!(input.rect.height(), FONT_FIELD_HEIGHT);
+                        assert_eq!(input.rect.top(), button.rect.top());
+                        assert_eq!(input.rect.bottom(), button.rect.bottom());
+                        assert_eq!(input.rect.right(), button.rect.left());
+                    });
+                });
+            });
+        }
+    }
+
+    #[test]
+    fn clicking_the_far_edge_and_rule_of_a_row_clears_multi_selection() {
+        let ctx = egui::Context::default();
+        let mut selection = RowSelection::default();
+        selection.replace(vec![0, 1]);
+        let mut row_rects = Vec::new();
+        {
+            let mut draw = |ctx: &egui::Context| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    row_rects.clear();
+                    for row in 0..3 {
+                        let response = font_range_row(
+                            ui,
+                            selection.rows.contains(&row),
+                            ["name", "", "font"],
+                            true,
+                            false,
+                        );
+                        row_rects.push(response.rect);
+                        if response.clicked() {
+                            let mods = ui.input(|i| i.modifiers);
+                            selection.click(row, 3, mods.shift, mods.ctrl);
+                        }
+                    }
+                });
+            };
+            let _ = ctx.run(egui::RawInput::default(), &mut draw);
+        }
+        let target = egui::pos2(row_rects[2].right() - 1.0, row_rects[2].bottom() - 1.0);
+        for pressed in [true, false] {
+            let _ = ctx.run(
+                egui::RawInput {
+                    events: vec![
+                        egui::Event::PointerMoved(target),
+                        egui::Event::PointerButton {
+                            pos: target,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        for row in 0..3 {
+                            let response = font_range_row(
+                                ui,
+                                selection.rows.contains(&row),
+                                ["name", "", "font"],
+                                true,
+                                false,
+                            );
+                            if response.clicked() {
+                                let mods = ui.input(|i| i.modifiers);
+                                selection.click(row, 3, mods.shift, mods.ctrl);
+                            }
+                        }
+                    });
+                },
+            );
+        }
+        assert_eq!(selection.rows, vec![2]);
+    }
+
+    #[test]
+    fn table_text_stays_between_rules_and_columns_at_different_sizes() {
+        for (width, font_size) in [(360.0, 17.0), (800.0, 24.0), (1200.0, 32.0)] {
+            let ctx = egui::Context::default();
+            let mut fonts = egui::FontDefinitions::default();
+            fonts.font_data.insert(
+                "MaterialIcons".into(),
+                Arc::new(egui::FontData::from_static(include_bytes!(
+                    "../../../resource/material-icons/MaterialIcons-Regular.ttf"
+                ))),
+            );
+            fonts.families.insert(
+                egui::FontFamily::Name("MaterialIcons".into()),
+                vec!["MaterialIcons".into()],
+            );
+            ctx.set_fonts(fonts);
+            ctx.style_mut(|style| {
+                style
+                    .text_styles
+                    .insert(egui::TextStyle::Body, egui::FontId::proportional(font_size));
+            });
+            let mut rows = Vec::new();
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, 400.0),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        font_table_header(ui);
+                        rows.push(
+                            font_range_row(
+                                ui,
+                                false,
+                                [
+                                    "Kanji",
+                                    "",
+                                    "A very long font family name that must stay in its column",
+                                ],
+                                true,
+                                false,
+                            )
+                            .rect,
+                        );
+                        rows.push(
+                            font_range_row(
+                                ui,
+                                true,
+                                ["Custom range", "U+10000–U+10FFFF", "Yu Gothic UI"],
+                                true,
+                                true,
+                            )
+                            .rect,
+                        );
+                    });
+                },
+            );
+            assert_eq!(rows[0].bottom(), rows[1].top());
+            assert_eq!(rows[0].x_range(), rows[1].x_range());
+            let mut texts = 0;
+            let mut checks = Vec::new();
+            for shape in output.shapes {
+                if let egui::epaint::Shape::Text(text) = shape.shape {
+                    if text.galley.size().x == 0.0 {
+                        continue;
+                    }
+                    let bounds = egui::Rect::from_min_size(text.pos, text.galley.size());
+                    if let Some(row) = rows.iter().find(|row| row.contains(bounds.center())) {
+                        if text.galley.job.text == LIGATURE_CHECK.to_string() {
+                            checks.push(bounds.center());
+                            assert!(bounds.left() > row.right() - 44.0);
+                            assert!(bounds.right() < row.right());
+                            continue;
+                        }
+                        texts += 1;
+                        assert!(bounds.top() >= row.top() + 7.0, "{bounds:?} {row:?}");
+                        assert!(bounds.bottom() <= row.bottom() - 7.0, "{bounds:?} {row:?}");
+                        for factor in [0.22, 0.52] {
+                            let line = row.left() + row.width() * factor;
+                            assert!(
+                                shape.clip_rect.right() <= line - 7.0
+                                    || shape.clip_rect.left() >= line + 7.0,
+                                "{:?} line={line}",
+                                shape.clip_rect
+                            );
+                        }
+                    }
+                }
+            }
+            assert_eq!(texts, 5);
+            assert_eq!(checks.len(), 1);
+            assert!(rows[1].contains(checks[0]));
+            assert!(!rows[0].contains(checks[0]));
+        }
+    }
 
     #[test]
     fn profile_header_leaves_visible_space_for_rows_at_every_sidebar_width() {

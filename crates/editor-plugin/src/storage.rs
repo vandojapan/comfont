@@ -24,7 +24,6 @@ pub fn load_document(path: &Path) -> Result<ProfileDocument, String> {
 
 pub fn save_document(path: &Path, document: &ProfileDocument) -> Result<(), String> {
     validate_document(document)?;
-    crate::profile_selector::generate(document)?;
     let parent = path
         .parent()
         .ok_or_else(|| format!("保存先{}に親フォルダがありません", path.display()))?;
@@ -35,18 +34,6 @@ pub fn save_document(path: &Path, document: &ProfileDocument) -> Result<(), Stri
     std::fs::write(path, json)
         .map_err(|error| format!("{}へ保存できません: {error}", path.display()))?;
     Ok(())
-}
-
-pub fn save_document_with_selector(path: &Path, document: &ProfileDocument) -> Result<(), String> {
-    save_document(path, document)?;
-    let root = path
-        .parent()
-        .and_then(Path::parent)
-        .ok_or("anm2の保存先が不正です")?;
-    crate::profile_selector::update(&root.join("Script").join("合成フォント.anm2"), document)
-        .map_err(|e| {
-            format!("プロファイルは保存済みですが、anm2の選択肢を更新できませんでした: {e}")
-        })
 }
 
 fn validate_document(document: &ProfileDocument) -> Result<(), String> {
@@ -110,12 +97,40 @@ mod tests {
         let path = temporary_path("roundtrip");
         let mut document = ProfileDocument::with_builtin_default();
         document.profiles[0].western.font_family = "DIN 2014".to_owned();
+        document.profiles[0].western.disable_ligatures = true;
+        document.profiles[0].class_order = vec![
+            compositefont_core::CharacterClass::Digit,
+            compositefont_core::CharacterClass::Kanji,
+        ];
 
         save_document(&path, &document).unwrap();
         let loaded = load_document(&path).unwrap();
         assert_eq!(loaded, document);
 
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+
+    fn saves_free_input_names_without_generating_or_overwriting_anm2() {
+        let root = temporary_path("free-input");
+        std::fs::create_dir_all(root.join("Script")).unwrap();
+        let script = root.join("Script/合成フォント.anm2");
+        std::fs::write(&script, "user-installed-script").unwrap();
+        let path = root.join("compositefont/profiles.json");
+        let mut document = ProfileDocument::with_builtin_default();
+        for name in ["無装飾", "a,b", "a，b", "字幕"] {
+            let mut profile = document.profiles[0].clone();
+            profile.name = name.into();
+            document.profiles.push(profile);
+        }
+        save_document(&path, &document).unwrap();
+        assert_eq!(load_document(&path).unwrap(), document);
+        assert_eq!(
+            std::fs::read_to_string(script).unwrap(),
+            "user-installed-script"
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -130,12 +145,14 @@ mod tests {
             let adjustment = profile[category].as_object_mut().unwrap();
             adjustment.remove("vertical_scale_ratio");
             adjustment.remove("horizontal_scale_ratio");
+            adjustment.remove("disable_ligatures");
         }
         std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
 
         let loaded = load_document(&path).unwrap();
         assert_eq!(loaded.profiles[0].western.vertical_scale_ratio, 1.0);
         assert_eq!(loaded.profiles[0].western.horizontal_scale_ratio, 1.0);
+        assert!(!loaded.profiles[0].western.disable_ligatures);
 
         std::fs::remove_file(path).unwrap();
     }

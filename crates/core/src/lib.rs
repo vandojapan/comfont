@@ -190,6 +190,9 @@ pub struct FontAdjustment {
     /// Illustratorの水平比率に相当する倍率。`1.0`で変形なし。
     #[serde(default = "neutral_scale_ratio")]
     pub horizontal_scale_ratio: f64,
+    /// 描画時にこの範囲の合字・必須結合を強制解除する。旧設定はOFF。
+    #[serde(default)]
+    pub disable_ligatures: bool,
 }
 
 impl FontAdjustment {
@@ -206,6 +209,7 @@ impl FontAdjustment {
             tracking_adjust_px: None,
             vertical_scale_ratio: 1.0,
             horizontal_scale_ratio: 1.0,
+            disable_ligatures: false,
         }
     }
 
@@ -307,6 +311,9 @@ pub struct CompositeFontProfile {
     /// Deleted legacy classes remain disabled across save/load.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disabled_classes: Vec<CharacterClass>,
+    /// Display order of legacy classes. It does not change character classification.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub class_order: Vec<CharacterClass>,
     pub name: String,
     pub western: FontAdjustment,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -333,11 +340,31 @@ pub struct CompositeFontProfile {
 }
 
 impl CompositeFontProfile {
+    /// Missing classes are appended in the legacy order; duplicates are ignored.
+    pub fn ordered_classes(&self) -> Vec<CharacterClass> {
+        let mut order = Vec::with_capacity(7);
+        for class in self.class_order.iter().copied().chain([
+            CharacterClass::Kanji,
+            CharacterClass::Hiragana,
+            CharacterClass::Katakana,
+            CharacterClass::Symbol,
+            CharacterClass::Western,
+            CharacterClass::Digit,
+            CharacterClass::Other,
+        ]) {
+            if !order.contains(&class) {
+                order.push(class);
+            }
+        }
+        order
+    }
+
     pub fn neutral_default() -> Self {
         Self {
             name: DEFAULT_PROFILE_NAME.to_owned(),
             custom_ranges: Vec::new(),
             disabled_classes: Vec::new(),
+            class_order: Vec::new(),
             western: FontAdjustment::neutral(),
             western_fallbacks: Vec::new(),
             hiragana: FontAdjustment::neutral(),
@@ -579,6 +606,7 @@ mod tests {
         CompositeFontProfile {
             custom_ranges: Vec::new(),
             disabled_classes: Vec::new(),
+            class_order: Vec::new(),
             name: "subtitle".to_owned(),
             western: adjustment("Inter"),
             western_fallbacks: Vec::new(),
@@ -685,6 +713,40 @@ mod tests {
             })
         );
         assert_eq!(adjustment.effective_metrics(None), None);
+    }
+
+    #[test]
+    fn class_display_order_defaults_and_normalizes_partial_orders() {
+        let mut profile = CompositeFontProfile::neutral_default();
+        assert_eq!(
+            profile.ordered_classes(),
+            vec![
+                CharacterClass::Kanji,
+                CharacterClass::Hiragana,
+                CharacterClass::Katakana,
+                CharacterClass::Symbol,
+                CharacterClass::Western,
+                CharacterClass::Digit,
+                CharacterClass::Other,
+            ]
+        );
+        profile.class_order = vec![
+            CharacterClass::Digit,
+            CharacterClass::Digit,
+            CharacterClass::Kanji,
+        ];
+        assert_eq!(
+            profile.ordered_classes(),
+            vec![
+                CharacterClass::Digit,
+                CharacterClass::Kanji,
+                CharacterClass::Hiragana,
+                CharacterClass::Katakana,
+                CharacterClass::Symbol,
+                CharacterClass::Western,
+                CharacterClass::Other,
+            ]
+        );
     }
 
     #[test]
@@ -801,7 +863,7 @@ mod unicode_preset_tests {
     }
 
     #[test]
-    fn common_blocks_are_pinned_and_search_accepts_both_names_and_codepoints() {
+    fn common_blocks_come_first_and_search_accepts_both_names_and_codepoints() {
         let names: Vec<_> = UNICODE_PRESETS
             .iter()
             .take_while(|p| p.frequent)

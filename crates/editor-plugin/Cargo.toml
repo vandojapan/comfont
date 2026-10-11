@@ -17,15 +17,14 @@ windows.workspace = true
 
 [features]
 default = []
-egui-ui = ["dep:eframe", "dep:winit"]
+# Compatibility alias: egui is always enabled.
+egui-ui = []
 
 [dependencies.eframe]
 version = "=0.33.0"
-optional = true
 default-features = false
 features = ["default_fonts", "glow", "accesskit"]
 
 [dependencies.winit]
 version = "0.30.13"
-optional = true
 default-features = false

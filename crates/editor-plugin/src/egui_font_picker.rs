@@ -112,6 +112,7 @@ impl FontPicker {
         state.current = font.clone();
         let initial_position = anchor_pixels.left_bottom() / ctx.pixels_per_point();
         let creating = state.geometry.is_none();
+        let visible = state.visible;
         let initial_width = anchor_pixels.width() / ctx.pixels_per_point();
         drop(state);
         self.opening = false;
@@ -123,10 +124,11 @@ impl FontPicker {
             .with_resizable(false)
             .with_taskbar(false)
             .with_window_level(egui::WindowLevel::AlwaysOnTop)
-            .with_active(true)
-            .with_visible(false);
+            // Parent repaints must not hide an already presented picker.
+            .with_visible(visible);
         if creating {
             builder = builder
+                .with_active(false)
                 .with_position(initial_position)
                 .with_inner_size([initial_width, 1.0]);
         }
@@ -305,6 +307,51 @@ fn render_picker(ctx: &egui::Context, fonts: &[String], shared: &Mutex<PickerSta
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn parent_repaints_keep_the_presented_picker_visible_and_do_not_refocus_it() {
+        let ctx = egui::Context::default();
+        ctx.set_embed_viewports(false);
+        let field = egui::Rect::from_min_size(egui::pos2(100.0, 200.0), egui::vec2(420.0, 32.0));
+        let mut picker = FontPicker::default();
+        {
+            let mut state = picker.state.lock().unwrap();
+            state.open = true;
+            state.visible = true;
+            state.geometry = Some(egui::Rect::from_min_size(
+                field.left_bottom(),
+                egui::vec2(420.0, 240.0),
+            ));
+        }
+        for _ in 0..3 {
+            let mut input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(960.0, 720.0),
+                )),
+                ..Default::default()
+            };
+            input
+                .viewports
+                .get_mut(&egui::ViewportId::ROOT)
+                .unwrap()
+                .inner_rect = Some(egui::Rect::from_min_size(
+                egui::pos2(80.0, 80.0),
+                egui::vec2(960.0, 720.0),
+            ));
+            let output = ctx.run(input, |ctx| {
+                picker.begin_frame();
+                picker.anchor = Some(field);
+                picker.show(ctx, &["Meiryo UI".into()], &mut "Meiryo UI".into());
+            });
+            let viewport =
+                &output.viewport_output[&egui::ViewportId::from_hash_of("font-picker-desktop")];
+            assert_eq!(viewport.builder.visible, Some(true));
+            assert_eq!(viewport.builder.active, None);
+            assert_eq!(viewport.builder.position, None);
+            assert!(picker.state.lock().unwrap().open);
+        }
+    }
+
     #[test]
     fn uses_desktop_space_beyond_editor_and_flips_at_work_area_bottom() {
         let work = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1920.0, 1040.0));

@@ -1,19 +1,17 @@
-//! Preview uses the rendering module's rule/fallback resolver and the host's
-//! FontManager (including private fonts), rather than a system-font substitute.
+//! Preview and anm2 use the same shaping, font resolution and rasterization.
 use crate::{
-    font_coverage::{FontManagerGlyphCoverage, GlyphCoverage},
-    resolved_adjustment,
+    font_coverage::FontManagerGlyphCoverage,
+    render::{RenderRequest, layout_options, prepare},
+    shaping::{HostFonts, rasterize},
 };
 use aviutl2::generic::ReadSection;
 use compositefont_core::CompositeFontProfile;
-use windows::{Win32::Graphics::DirectWrite::*, core::Interface};
 
 pub struct PreviewBitmap {
     pub width: u32,
     pub height: u32,
     pub bgra: Vec<u8>,
 }
-
 pub struct PreviewOptions {
     pub size: f64,
     pub width: u32,
@@ -21,7 +19,6 @@ pub struct PreviewOptions {
     pub baseline_guide: bool,
     pub bounds_guide: bool,
 }
-
 pub fn render_preview(
     section: &ReadSection,
     profile: &CompositeFontProfile,
@@ -42,142 +39,82 @@ pub fn render_preview(
         || !size.is_finite()
         || !(1.0..=256.0).contains(&size)
     {
-        return Err("プレビューの寸法が不正です。".to_owned());
+        return Err("プレビューの寸法が不正です。".into());
     }
-    let factory: IDWriteFactory =
-        unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED) }.map_err(|e| e.to_string())?;
+    let request = RenderRequest {
+        text: text.into(),
+        profile: Some(profile.clone()),
+        font: "Yu Gothic UI".into(),
+        size,
+        spacing: 0.0,
+        line_spacing: 0.0,
+        color: "f4f4f4".into(),
+        align: 0,
+        bold: false,
+        italic: false,
+        disable_ligatures: false,
+    };
+    let mut coverage = FontManagerGlyphCoverage::new(section);
+    // Preview text is already logical text, not the SDK's escaped alias.
+    let plan = prepare(&request, text, &mut coverage)?
+        .ok_or("プレビューに未対応の書式または補正値です。")?;
+    let mut layout = layout_options(&request, Some(width.saturating_sub(32).max(1) as f32));
+    // Per-glyph analyses are needed only for the settings preview guides.
+    layout.glyph_guides = bounds_guide;
+    let shaped = rasterize(&mut HostFonts::new(section), &plan, &layout)?;
     let mut bitmap = PreviewBitmap {
         width,
         height,
         bgra: [0x1b, 0x19, 0x18, 255].repeat((width * height) as usize),
     };
-    let mut coverage = FontManagerGlyphCoverage::new(section);
-    let mut x = 16.0f32;
-    let mut baseline = (size * 1.7) as f32;
-    let mut faces = std::collections::HashMap::new();
-    for character in text.chars() {
-        if character == '\r' {
-            continue;
-        }
-        if character == '\n' {
-            x = 16.0;
-            baseline += (size * 2.0) as f32;
-            continue;
-        }
-        let adjustment = resolved_adjustment(profile, character, &mut coverage);
-        let metrics = adjustment.effective_metrics(Some(size)).unwrap_or_default();
-        if !crate::is_safe_adjustment(&adjustment) {
-            return Err("プレビューの補正値が不正です。".to_owned());
-        }
-        let family = if adjustment.font_family.is_empty() {
-            "Yu Gothic UI"
-        } else {
-            &adjustment.font_family
-        };
-        if !faces.contains_key(family) {
-            let raw = section.get_font(family).map_err(|e| e.to_string())?;
-            let font = unsafe { IDWriteFont::from_raw_borrowed(&raw) }
-                .ok_or("フォントを取得できません。")?;
-            let face = unsafe { font.CreateFontFace() }.map_err(|e| e.to_string())?;
-            faces.insert(family.to_owned(), face);
-        }
-        let face = &faces[family];
-        let glyph_size = (size * metrics.size_ratio).clamp(1.0, 512.0) as f32;
-        let horizontal = adjustment.horizontal_scale_ratio.clamp(0.01, 10.0) as f32;
-        let vertical = adjustment.vertical_scale_ratio.clamp(0.01, 10.0) as f32;
-        let mut glyph = 0u16;
-        let point = character as u32;
-        unsafe { face.GetGlyphIndices(&point, 1, &mut glyph) }.map_err(|e| e.to_string())?;
-        let advance =
-            coverage.glyph_advance_em(family, character).unwrap_or(1.0) as f32 * glyph_size;
-        let tracking = (metrics.tracking_adjust_em * size) as f32;
-        if x + advance * horizontal > width as f32 - 16.0 {
-            x = 16.0;
-            baseline += (size * 2.0) as f32;
-        }
-        if baseline > height as f32 + size as f32 {
-            break;
-        }
-        let glyph_baseline = baseline - (metrics.baseline_shift_em * size) as f32;
-        let transform = DWRITE_MATRIX {
-            m11: horizontal,
-            m22: vertical,
-            dx: x,
-            dy: glyph_baseline,
-            ..Default::default()
-        };
-        // DWRITE_GLYPH_RUN has a raw interface field. Explicitly release our
-        // clone after creating the analysis, including the error path.
-        let run = DWRITE_GLYPH_RUN {
-            fontFace: std::mem::ManuallyDrop::new(Some(face.clone())),
-            fontEmSize: glyph_size,
-            glyphCount: 1,
-            glyphIndices: &glyph,
-            glyphAdvances: &advance,
-            ..Default::default()
-        };
-        let analysis = unsafe {
-            factory.CreateGlyphRunAnalysis(
-                &run,
-                1.0,
-                Some(&transform),
-                DWRITE_RENDERING_MODE_NATURAL,
-                DWRITE_MEASURING_MODE_NATURAL,
-                0.0,
-                0.0,
-            )
-        };
-        let mut face_ref = run.fontFace;
-        unsafe {
-            std::mem::ManuallyDrop::drop(&mut face_ref);
-        }
-        let analysis = analysis.map_err(|e| e.to_string())?;
-        let mut bounds = unsafe { analysis.GetAlphaTextureBounds(DWRITE_TEXTURE_CLEARTYPE_3x1) }
-            .map_err(|e| e.to_string())?;
-        bounds.left = bounds.left.clamp(0, width as i32);
-        bounds.right = bounds.right.clamp(0, width as i32);
-        bounds.top = bounds.top.clamp(0, height as i32);
-        bounds.bottom = bounds.bottom.clamp(0, height as i32);
-        if bounds.right > bounds.left && bounds.bottom > bounds.top {
-            let bw = (bounds.right - bounds.left) as usize;
-            let bh = (bounds.bottom - bounds.top) as usize;
-            let mut alpha = vec![0u8; bw * bh * 3];
-            unsafe {
-                analysis.CreateAlphaTexture(DWRITE_TEXTURE_CLEARTYPE_3x1, &bounds, &mut alpha)
-            }
-            .map_err(|e| e.to_string())?;
-            for gy in 0..bh {
-                for gx in 0..bw {
-                    let src = (gy * bw + gx) * 3;
-                    let dst =
-                        ((gy + bounds.top as usize) * width as usize + gx + bounds.left as usize)
-                            * 4;
-                    for channel in 0..3 {
-                        let a = alpha[src + 2 - channel] as u32;
-                        bitmap.bgra[dst + channel] =
-                            ((bitmap.bgra[dst + channel] as u32 * (255 - a) + 244 * a) / 255) as u8;
-                    }
-                }
-            }
-            if bounds_guide {
-                for px in bounds.left..bounds.right {
-                    put(&mut bitmap, px, bounds.top, [192, 192, 0, 255]);
-                    put(&mut bitmap, px, bounds.bottom - 1, [192, 192, 0, 255]);
-                }
-                for py in bounds.top..bounds.bottom {
-                    put(&mut bitmap, bounds.left, py, [192, 192, 0, 255]);
-                    put(&mut bitmap, bounds.right - 1, py, [192, 192, 0, 255]);
-                }
+    for y in 0..shaped.bitmap.height.min(height.saturating_sub(16) as i32) {
+        for x in 0..shaped.bitmap.width.min(width.saturating_sub(16) as i32) {
+            let src = ((y * shaped.bitmap.width + x) * 4) as usize;
+            let dst = (((y + 16) as u32 * width + (x + 16) as u32) * 4) as usize;
+            let alpha = u32::from(shaped.bitmap.bgra[src + 3]);
+            for c in 0..3 {
+                bitmap.bgra[dst + c] = ((u32::from(bitmap.bgra[dst + c]) * (255 - alpha)
+                    + u32::from(shaped.bitmap.bgra[src + c]) * alpha)
+                    / 255) as u8;
             }
         }
-        if baseline_guide {
-            for px in x as i32..(x + advance * horizontal).ceil() as i32 {
-                put(&mut bitmap, px, glyph_baseline as i32, [0, 64, 224, 255]);
+    }
+    // The logical cell and painted outline are separate. Native glyph indices
+    // keep a ligature as one glyph and retain positioned combining marks.
+    if bounds_guide {
+        for guide in &shaped.guides {
+            outline(&mut bitmap, guide.layout_bounds, [255, 0, 255, 255]);
+        }
+        for guide in &shaped.guides {
+            outline(&mut bitmap, guide.bounds, [255, 255, 0, 255]);
+        }
+    }
+    if baseline_guide {
+        for guide in &shaped.guides {
+            for x in guide.left.floor() as i32..guide.right.ceil() as i32 {
+                put(
+                    &mut bitmap,
+                    x + 16,
+                    guide.baseline.round() as i32 + 16,
+                    [0, 0, 255, 255],
+                );
             }
         }
-        x += (advance + tracking) * horizontal;
     }
     Ok(bitmap)
+}
+fn outline(bitmap: &mut PreviewBitmap, bounds: windows::Win32::Foundation::RECT, color: [u8; 4]) {
+    if bounds.right <= bounds.left || bounds.bottom <= bounds.top {
+        return;
+    }
+    for x in bounds.left..bounds.right {
+        put(bitmap, x + 16, bounds.top + 16, color);
+        put(bitmap, x + 16, bounds.bottom + 15, color);
+    }
+    for y in bounds.top..bounds.bottom {
+        put(bitmap, bounds.left + 16, y + 16, color);
+        put(bitmap, bounds.right + 15, y + 16, color);
+    }
 }
 fn put(bitmap: &mut PreviewBitmap, x: i32, y: i32, color: [u8; 4]) {
     if x >= 0 && y >= 0 && x < bitmap.width as i32 && y < bitmap.height as i32 {

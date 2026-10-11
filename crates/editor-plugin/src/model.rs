@@ -4,44 +4,19 @@ use compositefont_core::{
 };
 
 pub const CATEGORY_ROWS: [CategoryRow; 7] = [
-    CategoryRow::new(CharacterClass::Kanji, "漢字", "永国漢字髙﨑"),
-    CategoryRow::new(CharacterClass::Hiragana, "かな", "あがぱゃゅょっ"),
-    CategoryRow::new(CharacterClass::Katakana, "カナ", "アガパャュョッー"),
-    CategoryRow::new(CharacterClass::Symbol, "記号", "。、・！？「」"),
-    CategoryRow::new(CharacterClass::Western, "欧文", "TypeAaGgQq"),
-    CategoryRow::new(CharacterClass::Digit, "数字", "0123456789"),
-    CategoryRow::new(CharacterClass::Other, "その他", "ＡéЖΩ"),
-];
-
-pub const MIXED_PREVIEW_SAMPLES: [PreviewSample; 21] = [
-    PreviewSample::new(CharacterClass::Kanji, "国"),
-    PreviewSample::new(CharacterClass::Western, "A"),
-    PreviewSample::new(CharacterClass::Hiragana, "あ"),
-    PreviewSample::new(CharacterClass::Digit, "1"),
-    PreviewSample::new(CharacterClass::Symbol, "、"),
-    PreviewSample::new(CharacterClass::Katakana, "カ"),
-    PreviewSample::new(CharacterClass::Other, "é"),
-    PreviewSample::new(CharacterClass::Kanji, "漢"),
-    PreviewSample::new(CharacterClass::Western, "B"),
-    PreviewSample::new(CharacterClass::Hiragana, "い"),
-    PreviewSample::new(CharacterClass::Digit, "2"),
-    PreviewSample::new(CharacterClass::Symbol, "。"),
-    PreviewSample::new(CharacterClass::Katakana, "ナ"),
-    PreviewSample::new(CharacterClass::Other, "Ж"),
-    PreviewSample::new(CharacterClass::Kanji, "字"),
-    PreviewSample::new(CharacterClass::Western, "C"),
-    PreviewSample::new(CharacterClass::Hiragana, "う"),
-    PreviewSample::new(CharacterClass::Digit, "3"),
-    PreviewSample::new(CharacterClass::Symbol, "！"),
-    PreviewSample::new(CharacterClass::Katakana, "タ"),
-    PreviewSample::new(CharacterClass::Other, "Ω"),
+    CategoryRow::new(CharacterClass::Kanji, "漢字"),
+    CategoryRow::new(CharacterClass::Hiragana, "かな"),
+    CategoryRow::new(CharacterClass::Katakana, "カナ"),
+    CategoryRow::new(CharacterClass::Symbol, "記号"),
+    CategoryRow::new(CharacterClass::Western, "欧文"),
+    CategoryRow::new(CharacterClass::Digit, "数字"),
+    CategoryRow::new(CharacterClass::Other, "その他"),
 ];
 
 #[derive(Clone, Copy, Debug)]
 pub struct CategoryRow {
     pub class: CharacterClass,
     pub label: &'static str,
-    pub sample: &'static str,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,24 +26,8 @@ pub enum RowMoveDirection {
 }
 
 impl CategoryRow {
-    const fn new(class: CharacterClass, label: &'static str, sample: &'static str) -> Self {
-        Self {
-            class,
-            label,
-            sample,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct PreviewSample {
-    pub class: CharacterClass,
-    pub text: &'static str,
-}
-
-impl PreviewSample {
-    const fn new(class: CharacterClass, text: &'static str) -> Self {
-        Self { class, text }
+    const fn new(class: CharacterClass, label: &'static str) -> Self {
+        Self { class, label }
     }
 }
 
@@ -176,7 +135,6 @@ impl EditorModel {
         self.selected_fallback = Some(self.selected_profile().fallbacks_for(class).len() - 1);
     }
 
-    #[cfg(any(test, feature = "egui-ui"))]
     pub fn copy_selected_adjustment(&mut self) -> bool {
         let Some(adjustment) = self
             .adjustment_for_table_row(self.selected_table_row())
@@ -192,7 +150,6 @@ impl EditorModel {
         true
     }
 
-    #[cfg(any(test, feature = "egui-ui"))]
     pub fn copy_table_rows(&mut self, rows: &[usize]) -> Vec<usize> {
         let mut rows = rows.to_vec();
         rows.sort_unstable();
@@ -226,7 +183,6 @@ impl EditorModel {
         rows
     }
 
-    #[cfg(any(test, feature = "egui-ui"))]
     pub fn patch_table_rows(
         &mut self,
         rows: &[usize],
@@ -256,6 +212,9 @@ impl EditorModel {
                 values[4],
             )?;
             updated.fallback_font_families = adjustment.fallback_font_families.clone();
+            updated.disable_ligatures = patch
+                .disable_ligatures
+                .unwrap_or(adjustment.disable_ligatures);
             // Preserve fields byte-for-byte unless the user changed their item.
             if patch.font_family.is_none() {
                 updated.font_family = adjustment.font_family.clone();
@@ -345,7 +304,14 @@ impl EditorModel {
             adjacent.is_some_and(|next| {
                 next < targets.len()
                     && !rows.contains(&next)
-                    && Self::same_move_group(targets[row], targets[next])
+                    && (Self::same_move_group(targets[row], targets[next])
+                        || (targets[row].0 < CATEGORY_ROWS.len()
+                            && targets[next].0 < CATEGORY_ROWS.len()
+                            && !rows.iter().any(|&selected| {
+                                targets
+                                    .get(selected)
+                                    .is_some_and(|target| target.0 == targets[next].0)
+                            })))
             })
         })
     }
@@ -385,6 +351,7 @@ impl EditorModel {
             RowMoveDirection::Up => (1..flags.len()).collect(),
             RowMoveDirection::Down => (0..flags.len().saturating_sub(1)).rev().collect(),
         };
+        let mut moved_classes = Vec::new();
         for index in indices {
             let next = match direction {
                 RowMoveDirection::Up => index - 1,
@@ -394,13 +361,68 @@ impl EditorModel {
             {
                 self.swap_table_rows(index, next);
                 flags.swap(index, next);
+                moved_classes.push(targets[index].0);
             }
         }
-        let selected = flags
+
+        // Across class boundaries, move the whole class with its fallback candidates.
+        // Never move a class a second time after changing its candidate order.
+        let selected_targets: Vec<_> = targets
+            .iter()
+            .copied()
+            .zip(flags)
+            .filter_map(|(target, selected)| selected.then_some(target))
+            .collect();
+        let mut order = self.selected_profile().ordered_classes();
+        let mut visible: Vec<_> = order
+            .iter()
+            .copied()
+            .filter(|&class| self.selected_profile().class_enabled(class))
+            .collect();
+        let indices: Vec<usize> = match direction {
+            RowMoveDirection::Up => (1..visible.len()).collect(),
+            RowMoveDirection::Down => (0..visible.len().saturating_sub(1)).rev().collect(),
+        };
+        for index in indices {
+            let next = match direction {
+                RowMoveDirection::Up => index - 1,
+                RowMoveDirection::Down => index + 1,
+            };
+            let category = CATEGORY_ROWS
+                .iter()
+                .position(|row| row.class == visible[index])
+                .unwrap();
+            let neighbor = CATEGORY_ROWS
+                .iter()
+                .position(|row| row.class == visible[next])
+                .unwrap();
+            if selected_targets.iter().any(|target| target.0 == category)
+                && !selected_targets.iter().any(|target| target.0 == neighbor)
+                && !moved_classes.contains(&category)
+            {
+                visible.swap(index, next);
+            }
+        }
+        let previous: Vec<_> = order
+            .iter()
+            .copied()
+            .filter(|&class| self.selected_profile().class_enabled(class))
+            .collect();
+        if visible != previous {
+            let mut visible = visible.into_iter();
+            for class in &mut order {
+                if self.selected_profile().class_enabled(*class) {
+                    *class = visible.next().unwrap();
+                }
+            }
+            self.selected_profile_mut().class_order = order;
+        }
+        let selected: Vec<_> = self
+            .table_targets()
             .iter()
             .enumerate()
-            .filter_map(|(index, flag)| flag.then_some(index))
-            .collect::<Vec<_>>();
+            .filter_map(|(row, target)| selected_targets.contains(target).then_some(row))
+            .collect();
         if let Some(&row) = selected.first() {
             self.select_table_row(row);
         }
@@ -445,13 +467,17 @@ impl EditorModel {
 
     fn table_targets(&self) -> Vec<(usize, Option<usize>)> {
         let mut targets = Vec::new();
-        for (category, row) in CATEGORY_ROWS.iter().enumerate() {
-            if !self.selected_profile().class_enabled(row.class) {
+        for class in self.selected_profile().ordered_classes() {
+            let category = CATEGORY_ROWS
+                .iter()
+                .position(|row| row.class == class)
+                .unwrap();
+            if !self.selected_profile().class_enabled(class) {
                 continue;
             }
             targets.push((category, None));
             targets.extend(
-                (0..self.selected_profile().fallbacks_for(row.class).len())
+                (0..self.selected_profile().fallbacks_for(class).len())
                     .map(|index| (category, Some(index))),
             );
         }
@@ -476,6 +502,29 @@ impl EditorModel {
             format!("{} U+{:04X}–{:04X}", range.name, range.start, range.end)
         }
     }
+
+    pub fn table_row_name(&self, row: usize) -> &str {
+        let Some((category, _)) = self.table_row_target(row) else {
+            return "";
+        };
+        if category < CATEGORY_ROWS.len() {
+            CATEGORY_ROWS[category].label
+        } else {
+            &self.selected_profile().custom_ranges[category - CATEGORY_ROWS.len()].name
+        }
+    }
+
+    pub fn table_row_range_text(&self, row: usize) -> String {
+        let Some((category, _)) = self.table_row_target(row) else {
+            return String::new();
+        };
+        let Some(index) = category.checked_sub(CATEGORY_ROWS.len()) else {
+            return String::new();
+        };
+        let range = &self.selected_profile().custom_ranges[index];
+        format!("U+{:04X}–U+{:04X}", range.start, range.end)
+    }
+
     pub fn selected_range(&self) -> Option<&UnicodeRange> {
         self.selected_category
             .checked_sub(CATEGORY_ROWS.len())
@@ -577,6 +626,7 @@ impl EditorModel {
         Ok(())
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub fn update_table_rows(
         &mut self,
@@ -604,7 +654,13 @@ impl EditorModel {
             };
             if category >= CATEGORY_ROWS.len() {
                 self.selected_profile_mut().custom_ranges[category - CATEGORY_ROWS.len()]
-                    .adjustment = adjustment.clone();
+                    .adjustment = FontAdjustment {
+                    disable_ligatures: self.selected_profile().custom_ranges
+                        [category - CATEGORY_ROWS.len()]
+                    .adjustment
+                    .disable_ligatures,
+                    ..adjustment.clone()
+                };
                 continue;
             }
             let class = CATEGORY_ROWS[category].class;
@@ -614,21 +670,22 @@ impl EditorModel {
                 None => Some(profile.adjustment_for_mut(class)),
             };
             if let Some(target) = target {
-                *target = adjustment.clone();
+                let mut updated = adjustment.clone();
+                updated.disable_ligatures = target.disable_ligatures;
+                *target = updated;
             }
         }
         Ok(())
     }
 }
 
-#[cfg(any(test, feature = "egui-ui"))]
 #[derive(Default)]
 pub struct AdjustmentPatch {
     pub font_family: Option<String>,
     pub metric_unit: Option<MetricUnit>,
     pub values: [Option<f64>; 5],
+    pub disable_ligatures: Option<bool>,
 }
-#[cfg(any(test, feature = "egui-ui"))]
 pub fn adjustment_values(adjustment: &FontAdjustment) -> [f64; 5] {
     match adjustment.metric_unit {
         MetricUnit::Percent => [
@@ -714,6 +771,7 @@ fn make_adjustment(
         tracking_adjust_px,
         vertical_scale_ratio: vertical_scale_percent / 100.0,
         horizontal_scale_ratio: horizontal_scale_percent / 100.0,
+        disable_ligatures: false,
     })
 }
 
@@ -807,6 +865,71 @@ mod tests {
             .unwrap();
         assert_eq!(model.document(), &before);
     }
+    #[test]
+    fn ligature_batch_changes_preserve_metrics_and_unrelated_edits() {
+        let mut model = EditorModel::new(ProfileDocument::with_builtin_default());
+        model.add_range("Oriya".into(), 0x0b00, 0x0b7f).unwrap();
+        let last = model.table_row_count() - 1;
+        let before = model.document().clone();
+        model
+            .patch_table_rows(
+                &[4, last],
+                &AdjustmentPatch {
+                    disable_ligatures: Some(true),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let mut expected = before;
+        expected.profiles[0].western.disable_ligatures = true;
+        expected.profiles[0].custom_ranges[0]
+            .adjustment
+            .disable_ligatures = true;
+        assert_eq!(model.document(), &expected);
+        model
+            .patch_table_rows(
+                &[4, last],
+                &AdjustmentPatch {
+                    values: [None, None, None, Some(120.0), None],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(model.adjustment_for_table_row(4).unwrap().disable_ligatures);
+        assert!(
+            model
+                .adjustment_for_table_row(last)
+                .unwrap()
+                .disable_ligatures
+        );
+        model
+            .patch_table_rows(
+                &[last],
+                &AdjustmentPatch {
+                    disable_ligatures: Some(false),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(
+            !model
+                .adjustment_for_table_row(last)
+                .unwrap()
+                .disable_ligatures
+        );
+        assert_eq!(
+            model
+                .adjustment_for_table_row(last)
+                .unwrap()
+                .vertical_scale_ratio,
+            1.2
+        );
+        let reloaded = EditorModel::new(
+            serde_json::from_str(&serde_json::to_string(model.document()).unwrap()).unwrap(),
+        );
+        assert_eq!(reloaded.document(), model.document());
+    }
+
     #[test]
     fn copies_multiple_sources_in_order_despite_row_index_changes() {
         let mut model = EditorModel::new(ProfileDocument::with_builtin_default());
@@ -1015,7 +1138,7 @@ mod tests {
     }
 
     #[test]
-    fn moves_the_primary_row_and_stays_inside_group_edges() {
+    fn moves_the_primary_row_inside_candidate_group() {
         let mut model = EditorModel::new(ProfileDocument::with_builtin_default());
         model.selected_profile_mut().kanji.font_family = "Primary".to_owned();
         model.add_selected_adjustment();
@@ -1042,7 +1165,7 @@ mod tests {
             "Primary"
         );
         assert!(model.can_move_table_rows(&[1], RowMoveDirection::Up));
-        assert!(!model.can_move_table_rows(&[2], RowMoveDirection::Down));
+        assert!(model.can_move_table_rows(&[2], RowMoveDirection::Down));
         assert_eq!(model.move_table_rows(&[1], RowMoveDirection::Up), vec![0]);
         assert_eq!(model.selected_profile().kanji.font_family, "Primary");
     }
@@ -1104,34 +1227,6 @@ mod tests {
     fn keeps_at_least_one_profile() {
         let mut model = EditorModel::new(ProfileDocument::with_builtin_default());
         assert!(model.delete_selected_profile().is_err());
-    }
-
-    #[test]
-    fn preview_samples_only_contain_their_assigned_character_class() {
-        for row in CATEGORY_ROWS {
-            for character in row.sample.chars() {
-                assert_eq!(
-                    compositefont_core::classify_character(character),
-                    row.class,
-                    "{character:?} in the {} preview sample",
-                    row.label
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn mixed_preview_alternates_valid_character_classes() {
-        for (index, sample) in MIXED_PREVIEW_SAMPLES.iter().enumerate() {
-            assert_eq!(sample.text.chars().count(), 1);
-            assert_eq!(
-                compositefont_core::classify_character(sample.text.chars().next().unwrap()),
-                sample.class
-            );
-            if let Some(previous) = index.checked_sub(1) {
-                assert_ne!(MIXED_PREVIEW_SAMPLES[previous].class, sample.class);
-            }
-        }
     }
 
     #[test]
@@ -1200,5 +1295,144 @@ mod tests {
         assert!(model.can_move_table_rows(&[row], RowMoveDirection::Up));
         model.move_table_rows(&[row], RowMoveDirection::Up);
         assert_eq!(model.selected_profile().custom_ranges[0].name, "second");
+    }
+    #[test]
+    fn reorders_default_classes_preserving_fonts_and_saved_order() {
+        let mut model = EditorModel::new(ProfileDocument::with_builtin_default());
+        model.selected_profile_mut().kanji.font_family = "KanjiFont".into();
+        model.selected_profile_mut().hiragana.font_family = "KanaFont".into();
+        assert!(!model.can_move_table_rows(&[0], RowMoveDirection::Up));
+        assert!(model.can_move_table_rows(&[0], RowMoveDirection::Down));
+        assert_eq!(model.move_table_rows(&[0], RowMoveDirection::Down), vec![1]);
+        assert_eq!(model.table_row_label(0), "かな");
+        assert_eq!(model.table_row_label(1), "漢字");
+        assert_eq!(
+            model.selected_profile().resolve('漢').font_family,
+            "KanjiFont"
+        );
+        assert_eq!(
+            model.selected_profile().resolve('あ').font_family,
+            "KanaFont"
+        );
+        let json = serde_json::to_string(model.document()).unwrap();
+        let mut loaded = EditorModel::new(serde_json::from_str(&json).unwrap());
+        assert_eq!(loaded.table_row_label(0), "かな");
+        assert!(loaded.can_move_table_rows(&[1], RowMoveDirection::Up));
+        assert_eq!(loaded.move_table_rows(&[1], RowMoveDirection::Up), vec![0]);
+        assert_eq!(loaded.table_row_label(0), "漢字");
+        assert!(!loaded.can_move_table_rows(&[6], RowMoveDirection::Down));
+    }
+
+    #[test]
+    fn moves_class_with_candidates_across_boundary_and_skips_deleted_classes() {
+        let mut model = EditorModel::new(ProfileDocument::with_builtin_default());
+        model.selected_profile_mut().kanji.font_family = "Primary".into();
+        model.add_selected_adjustment();
+        model.selected_profile_mut().kanji_fallbacks[0].font_family = "Fallback".into();
+        assert_eq!(model.move_table_rows(&[1], RowMoveDirection::Down), vec![2]);
+        assert_eq!(model.table_row_label(0), "かな");
+        assert_eq!(model.table_row_label(1), "漢字");
+        assert_eq!(model.table_row_label(2), "漢字");
+        assert_eq!(model.selected_profile().kanji.font_family, "Primary");
+        assert_eq!(
+            model.selected_profile().kanji_fallbacks[0].font_family,
+            "Fallback"
+        );
+        model.remove_adjustments_for_table_rows(&[0]);
+        assert!(model.can_move_table_rows(&[0, 1], RowMoveDirection::Down));
+        assert_eq!(
+            model.move_table_rows(&[0, 1], RowMoveDirection::Down),
+            vec![1, 2]
+        );
+        assert_eq!(model.table_row_label(0), "カナ");
+        assert!(
+            !model
+                .selected_profile()
+                .class_enabled(CharacterClass::Hiragana)
+        );
+        model.restore_category(1);
+        assert!(
+            model
+                .selected_profile()
+                .class_enabled(CharacterClass::Hiragana)
+        );
+        assert_eq!(model.table_row_count(), 8);
+    }
+
+    #[test]
+    fn move_enablement_matches_action_and_keeps_multi_selection_order() {
+        let mut base = EditorModel::new(ProfileDocument::with_builtin_default());
+        base.add_selected_adjustment();
+        base.add_selected_adjustment();
+        base.add_range("first".into(), 0x41, 0x5a).unwrap();
+        base.add_range("second".into(), 0x41, 0x5a).unwrap();
+        for row in 0..base.table_row_count() {
+            base.patch_table_rows(
+                &[row],
+                &AdjustmentPatch {
+                    font_family: Some(format!("font-{row}")),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        let count = base.table_row_count();
+        for bits in 0..(1usize << count) {
+            let selected: Vec<_> = (0..count).filter(|row| bits & (1 << row) != 0).collect();
+            let fonts: Vec<_> = selected
+                .iter()
+                .map(|&row| {
+                    base.adjustment_for_table_row(row)
+                        .unwrap()
+                        .font_family
+                        .clone()
+                })
+                .collect();
+            for direction in [RowMoveDirection::Up, RowMoveDirection::Down] {
+                let mut model = base.clone();
+                let enabled = model.can_move_table_rows(&selected, direction);
+                let moved = model.move_table_rows(&selected, direction);
+                assert_eq!(
+                    enabled,
+                    model.document() != base.document(),
+                    "selection={selected:?} direction={direction:?}"
+                );
+                let after: Vec<_> = moved
+                    .iter()
+                    .map(|&row| {
+                        model
+                            .adjustment_for_table_row(row)
+                            .unwrap()
+                            .font_family
+                            .clone()
+                    })
+                    .collect();
+                assert_eq!(
+                    fonts, after,
+                    "selection={selected:?} direction={direction:?}"
+                );
+                assert_eq!(model.table_row_count(), count);
+                assert_eq!(
+                    model.selected_profile().resolve('A').font_family,
+                    model.selected_profile().custom_ranges[0]
+                        .adjustment
+                        .font_family
+                );
+            }
+        }
+    }
+    #[test]
+    fn table_keeps_unspecified_ranges_and_names_blank() {
+        let mut model = EditorModel::new(ProfileDocument::with_builtin_default());
+        assert_eq!(model.table_row_name(0), "漢字");
+        assert_eq!(model.table_row_range_text(0), "");
+        model.add_selected_adjustment();
+        assert_eq!(model.table_row_range_text(1), "");
+        model.add_range(String::new(), 0x10000, 0x10ffff).unwrap();
+        let row = model.selected_table_row();
+        assert_eq!(model.table_row_name(row), "");
+        assert_eq!(model.table_row_range_text(row), "U+10000–U+10FFFF");
+        assert_eq!(model.table_row_name(usize::MAX), "");
+        assert_eq!(model.table_row_range_text(usize::MAX), "");
     }
 }

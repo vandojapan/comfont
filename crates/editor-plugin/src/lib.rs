@@ -1,12 +1,9 @@
-#[cfg(feature = "egui-ui")]
 mod egui_ui;
 mod entrypoint;
 mod font_collection;
 mod model;
-mod profile_selector;
 mod storage;
 mod text_integration;
-mod ui;
 
 use std::{
     path::PathBuf,
@@ -75,7 +72,7 @@ impl GenericPlugin for CompositeFontEditorPlugin {
         aviutl2::generic::GenericPluginTable {
             name: "Composite Font Editor".to_owned(),
             information: format!(
-                "Composite Font profile editor for AviUtl2 / v{}",
+                "Composite Font profile editor for AviUtl2 / v{} β",
                 env!("CARGO_PKG_VERSION")
             ),
         }
@@ -96,14 +93,11 @@ impl GenericPlugin for CompositeFontEditorPlugin {
                     text_integration::update_text(&handle, object, effect, index, item, restore)
                 {
                     let _ = aviutl2::logger::write_error_log(&error);
-                    ui::report_error(&error);
                 }
             });
         }
         registry.register_script_module(Some("compositefont"), &self.script_module);
         registry.register_menus::<Self>();
-        #[cfg(feature = "egui-ui")]
-        registry.register_menus::<EguiMenus>();
     }
 
     fn on_project_load(&mut self, _project: &mut aviutl2::generic::ProjectFile) {
@@ -125,25 +119,13 @@ impl GenericPlugin for CompositeFontEditorPlugin {
 
 #[aviutl2::generic::menus]
 impl CompositeFontEditorPlugin {
-    #[config(name = "合成フォント…")]
+    #[config(name = "合成フォント (β)…")]
     fn show_config(owner: aviutl2::Win32WindowHandle) -> aviutl2::AnyResult<()> {
-        show_editor_menu(owner, false)
+        show_editor_menu(owner)
     }
 }
 
-#[cfg(feature = "egui-ui")]
-struct EguiMenus;
-
-#[cfg(feature = "egui-ui")]
-#[aviutl2::generic::menus]
-impl EguiMenus {
-    #[config(name = "合成フォント (egui 試験版)…")]
-    fn show_config_egui(owner: aviutl2::Win32WindowHandle) -> aviutl2::AnyResult<()> {
-        show_editor_menu(owner, true)
-    }
-}
-
-fn show_editor_menu(owner: aviutl2::Win32WindowHandle, use_egui: bool) -> aviutl2::AnyResult<()> {
+fn show_editor_menu(owner: aviutl2::Win32WindowHandle) -> aviutl2::AnyResult<()> {
     static OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if OPEN.swap(true, std::sync::atomic::Ordering::AcqRel) {
         return Ok(());
@@ -174,18 +156,7 @@ fn show_editor_menu(owner: aviutl2::Win32WindowHandle, use_egui: bool) -> aviutl
             Arc::clone(&runtime.font_registration),
         )
     };
-    #[cfg(feature = "egui-ui")]
-    let show = if use_egui {
-        egui_ui::show_editor
-    } else {
-        ui::show_editor
-    };
-    #[cfg(not(feature = "egui-ui"))]
-    let show = {
-        let _ = use_egui;
-        ui::show_editor
-    };
-    let document = show(
+    let document = egui_ui::show_editor(
         owner,
         document,
         profile_path,

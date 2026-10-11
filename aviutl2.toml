@@ -18,7 +18,7 @@ destination = "Plugin/comfont.aux2"
 placement_method = "copy"
 
 [artifacts.compositefont-editor-aux2.profiles.debug]
-build = "cargo build -p compositefont-editor-plugin --features egui-ui"
+build = "cargo build -p compositefont-editor-plugin"
 source = "target/debug/compositefont_editor.dll"
 
 [artifacts.compositefont-editor-aux2.profiles.release]
@@ -54,3 +54,23 @@ source = "resource/material-icons/LICENSE.txt"
 
 [artifacts.material-icons-license.profiles.release]
 source = "resource/material-icons/LICENSE.txt"
+
+[artifacts.lucide-license]
+destination = "Plugin/comfont-licenses/lucide.txt"
+placement_method = "copy"
+
+[artifacts.lucide-license.profiles.debug]
+source = "resource/lucide/LICENSE.txt"
+
+[artifacts.lucide-license.profiles.release]
+source = "resource/lucide/LICENSE.txt"
+
+[artifacts.unicode-license]
+destination = "Plugin/comfont-licenses/unicode.txt"
+placement_method = "copy"
+
+[artifacts.unicode-license.profiles.debug]
+source = "resource/unicode/LICENSE.txt"
+
+[artifacts.unicode-license.profiles.release]
+source = "resource/unicode/LICENSE.txt"
