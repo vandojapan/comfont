@@ -3,7 +3,7 @@
 [project]
 id = "vandojapan.comfont"
 name = "comfont"
-version = "0.2.0"
+version = "0.3.0"
 
 [development]
 aviutl2_version = "latest"
@@ -35,32 +35,42 @@ source = "scripts/@compositefont-test.obj2"
 [artifacts.compositefont-test-script.profiles.release]
 enabled = false
 
-[artifacts.compositefont-subtitle-object]
-destination = "Alias/合成フォント字幕.object"
+[artifacts.compositefont-profile-anm2]
+destination = "Script/合成フォント.anm2"
 placement_method = "copy"
 
-[artifacts.compositefont-subtitle-object.profiles.debug]
-source = "scripts/合成フォント字幕.object"
+[artifacts.compositefont-profile-anm2.profiles.debug]
+source = "scripts/合成フォント.anm2"
 
-[artifacts.compositefont-subtitle-object.profiles.release]
-source = "scripts/合成フォント字幕.object"
+[artifacts.compositefont-profile-anm2.profiles.release]
+source = "scripts/合成フォント.anm2"
 
-[artifacts.compositefont-name-object]
-destination = "Alias/合成フォント名前表示.object"
+[artifacts.material-icons-license]
+destination = "Plugin/comfont-licenses/material-icons.txt"
 placement_method = "copy"
 
-[artifacts.compositefont-name-object.profiles.debug]
-source = "scripts/合成フォント名前表示.object"
+[artifacts.material-icons-license.profiles.debug]
+source = "resource/material-icons/LICENSE.txt"
 
-[artifacts.compositefont-name-object.profiles.release]
-source = "scripts/合成フォント名前表示.object"
+[artifacts.material-icons-license.profiles.release]
+source = "resource/material-icons/LICENSE.txt"
 
-[artifacts.compositefont-text-object]
-destination = "Alias/合成フォントテキスト.object"
+[artifacts.lucide-license]
+destination = "Plugin/comfont-licenses/lucide.txt"
 placement_method = "copy"
 
-[artifacts.compositefont-text-object.profiles.debug]
-source = "scripts/合成フォントテキスト.object"
+[artifacts.lucide-license.profiles.debug]
+source = "resource/lucide/LICENSE.txt"
 
-[artifacts.compositefont-text-object.profiles.release]
-source = "scripts/合成フォントテキスト.object"
+[artifacts.lucide-license.profiles.release]
+source = "resource/lucide/LICENSE.txt"
+
+[artifacts.unicode-license]
+destination = "Plugin/comfont-licenses/unicode.txt"
+placement_method = "copy"
+
+[artifacts.unicode-license.profiles.debug]
+source = "resource/unicode/LICENSE.txt"
+
+[artifacts.unicode-license.profiles.release]
+source = "resource/unicode/LICENSE.txt"

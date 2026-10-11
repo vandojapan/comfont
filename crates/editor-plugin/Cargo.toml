@@ -14,3 +14,17 @@ compositefont-core.workspace = true
 compositefont-module-plugin.workspace = true
 serde_json.workspace = true
 windows.workspace = true
+
+[features]
+default = []
+# Compatibility alias: egui is always enabled.
+egui-ui = []
+
+[dependencies.eframe]
+version = "=0.33.0"
+default-features = false
+features = ["default_fonts", "glow", "accesskit"]
+
+[dependencies.winit]
+version = "0.30.13"
+default-features = false

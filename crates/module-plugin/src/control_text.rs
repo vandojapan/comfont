@@ -84,6 +84,7 @@ pub(crate) struct TextFormatState {
     pub(crate) s_italic: AttributeState<bool>,
     pub(crate) s_strike: AttributeState<bool>,
     pub(crate) s_outline_size: AttributeState<String>,
+    pub(crate) render_layout: RenderLayout,
     size_restore_expressions: Vec<String>,
     s_style_active: bool,
 }
@@ -120,6 +121,7 @@ impl TextFormatState {
                 ..at_strike
             },
             s_outline_size: AttributeState::new(None),
+            render_layout: RenderLayout::default(),
             size_restore_expressions: Vec::new(),
             s_style_active: false,
         }
@@ -305,9 +307,85 @@ struct SizeExpression {
     source: String,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct RenderLayout {
+    pub(crate) tracking: Option<f64>,
+    pub(crate) horizontal: f64,
+    pub(crate) vertical: f64,
+    pub(crate) offset_y: f64,
+    pub(crate) disable_ligatures: bool,
+}
+impl Default for RenderLayout {
+    fn default() -> Self {
+        Self {
+            tracking: None,
+            horizontal: 1.0,
+            vertical: 1.0,
+            offset_y: 0.0,
+            disable_ligatures: false,
+        }
+    }
+}
+
+fn apply_render_layout(state: &mut TextFormatState, body: &str) -> Result<bool, ParseError> {
+    if body == "cf_liga0" {
+        state.render_layout.disable_ligatures = true;
+    } else if body == "cf_liga" {
+        state.render_layout.disable_ligatures = false;
+    } else if let Some(value) = body.strip_prefix("gw") {
+        state.render_layout.tracking = if value.is_empty() {
+            None
+        } else {
+            Some(parse_decimal(value, true)?)
+        };
+    } else if let Some(value) = body.strip_prefix("tw") {
+        let scale = if value.is_empty() {
+            1.0
+        } else {
+            parse_decimal(value, false)?
+        };
+        if scale <= 0.0 {
+            return Err(ParseError);
+        }
+        state.render_layout.horizontal = scale;
+    } else if let Some(value) = body.strip_prefix("th") {
+        let scale = if value.is_empty() {
+            1.0
+        } else {
+            parse_decimal(value, false)?
+        };
+        if scale <= 0.0 {
+            return Err(ParseError);
+        }
+        state.render_layout.vertical = scale;
+    } else if body == "p" {
+        state.render_layout.offset_y = 0.0;
+    } else if let Some(value) = body.strip_prefix("p+0,") {
+        state.render_layout.offset_y = parse_decimal(value, true)?;
+    } else {
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+pub(crate) fn parse_decorated_control_text(
+    source: &str,
+    defaults: ControlTextDefaults,
+) -> Result<ParsedControlText, ParseError> {
+    parse_control_text_mode(source, defaults, true)
+}
+
 pub(crate) fn parse_control_text(
     source: &str,
     defaults: ControlTextDefaults,
+) -> Result<ParsedControlText, ParseError> {
+    parse_control_text_mode(source, defaults, false)
+}
+
+fn parse_control_text_mode(
+    source: &str,
+    defaults: ControlTextDefaults,
+    render_layout: bool,
 ) -> Result<ParsedControlText, ParseError> {
     let mut state = TextFormatState::new(&defaults);
     let mut spans = Vec::new();
@@ -323,8 +401,11 @@ pub(crate) fn parse_control_text(
                     .find('>')
                     .map(|relative| cursor + 1 + relative)
                     .ok_or(ParseError)?;
-                let tag = parse_tag(&source[cursor + 1..tag_end])?;
-                apply_tag(&mut state, tag)?;
+                let body = &source[cursor + 1..tag_end];
+                if !render_layout || !apply_render_layout(&mut state, body)? {
+                    let tag = parse_tag(body)?;
+                    apply_tag(&mut state, tag)?;
+                }
                 cursor = tag_end + 1;
                 visible_start = cursor;
             }
@@ -712,6 +793,36 @@ fn apply_style_delta(attribute: &mut AttributeState<bool>, selected: bool, value
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn generated_layout_tags_are_only_accepted_by_the_draw_parser_and_reset() {
+        let source = "<@Latin><s*1.15><gw7><tw1.1><th0.9><p+0,-2>A<p><th><tw><gw><s><@>B";
+        assert!(parse_control_text(source, defaults()).is_err());
+        let parsed = parse_decorated_control_text(source, defaults()).unwrap();
+        let first = &parsed.spans[0].format;
+        assert_eq!(first.effective_font_family(), Some("Latin"));
+        assert_eq!(first.effective_font_size(), Some(46.0));
+        assert_eq!(first.render_layout.tracking, Some(7.0));
+        assert_eq!(first.render_layout.horizontal, 1.1);
+        assert_eq!(first.render_layout.vertical, 0.9);
+        assert_eq!(first.render_layout.offset_y, -2.0);
+        let second = &parsed.spans[1].format;
+        assert_eq!(second.render_layout, RenderLayout::default());
+        assert_eq!(second.effective_font_size(), Some(40.0));
+        assert_eq!(second.effective_font_family(), Some("Object Font"));
+        for source in [
+            "<tw0>A",
+            "<th-1>A",
+            "<gwNaN>A",
+            "<p+1,2>A",
+            "<p+0,inf>A",
+            "<?obj.mes('A')?>",
+        ] {
+            assert!(
+                parse_decorated_control_text(source, defaults()).is_err(),
+                "{source}"
+            );
+        }
+    }
 
     fn defaults() -> ControlTextDefaults {
         ControlTextDefaults {

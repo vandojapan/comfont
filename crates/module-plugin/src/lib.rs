@@ -1,5 +1,8 @@
 mod control_text;
 mod font_coverage;
+pub mod preview;
+mod render;
+mod shaping;
 
 use aviutl2::module::{IntoScriptModuleReturnValue, ScriptModule, ScriptModuleFunctions};
 use compositefont_core::{
@@ -20,7 +23,7 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-const API_VERSION: i32 = 10;
+const API_VERSION: i32 = 13;
 // AviUtl2 rasterizes text size at twice the value reported by obj.getfont(),
 // while gw and the resulting object bounds use pixel units.
 const TEXT_RASTER_SIZE_SCALE: f64 = 2.0;
@@ -59,6 +62,9 @@ fn integration_test_profile() -> CompositeFontProfile {
     adobe_kanji.font_family = "A P-OTF UD新ゴ Pr6N B".to_owned();
 
     CompositeFontProfile {
+        custom_ranges: Vec::new(),
+        disabled_classes: Vec::new(),
+        class_order: Vec::new(),
         name: INTEGRATION_TEST_PROFILE.to_owned(),
         western: western.clone(),
         western_fallbacks: Vec::new(),
@@ -88,6 +94,9 @@ fn clipping_test_profile() -> CompositeFontProfile {
         ..FontAdjustment::neutral()
     };
     CompositeFontProfile {
+        custom_ranges: Vec::new(),
+        disabled_classes: Vec::new(),
+        class_order: Vec::new(),
         name: CLIPPING_TEST_PROFILE.to_owned(),
         western: ocrb.clone(),
         western_fallbacks: Vec::new(),
@@ -151,6 +160,9 @@ fn load_profile_store(path: &Path) -> Result<ProfileStore, String> {
                     path.display()
                 ));
             }
+            for profile in &document.profiles {
+                profile.validate_ranges()?;
+            }
             document.profiles
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => builtin_profiles(),
@@ -173,11 +185,20 @@ fn load_profile_store(path: &Path) -> Result<ProfileStore, String> {
     Ok(ProfileStore::from_profiles(profiles))
 }
 
+struct DecoratedTextCacheEntry {
+    source: String,
+    profile: CompositeFontProfile,
+    size: Option<f64>,
+    spacing: Option<f64>,
+    result: String,
+}
+
 struct ReloadableProfiles {
     store: ProfileStore,
     path: PathBuf,
     observed_modified: Option<SystemTime>,
     last_checked: Instant,
+    decorated_cache: std::collections::VecDeque<DecoratedTextCacheEntry>,
 }
 
 impl ReloadableProfiles {
@@ -192,6 +213,7 @@ impl ReloadableProfiles {
             path,
             observed_modified,
             last_checked: Instant::now(),
+            decorated_cache: std::collections::VecDeque::new(),
         }
     }
 
@@ -234,13 +256,43 @@ impl ReloadableProfiles {
         let Ok(profile) = self.store.profile(profile_name) else {
             return text.to_owned();
         };
-        decorate_plain_text_with_coverage(
+        let profile = profile.clone();
+        if let Some(index) = self.decorated_cache.iter().position(|entry| {
+            entry.source == text
+                && entry.profile == profile
+                && entry.size == base_font_size
+                && entry.spacing == base_char_spacing
+        }) {
+            let entry = self.decorated_cache.remove(index).unwrap();
+            let result = entry.result.clone();
+            self.decorated_cache.push_back(entry);
+            return result;
+        }
+        let result = decorate_plain_text_with_coverage(
             text,
-            profile,
+            &profile,
             base_font_size,
             base_char_spacing,
             coverage,
-        )
+        );
+        self.decorated_cache.push_back(DecoratedTextCacheEntry {
+            source: text.to_owned(),
+            profile,
+            size: base_font_size,
+            spacing: base_char_spacing,
+            result: result.clone(),
+        });
+        while self.decorated_cache.len() > 16
+            || self
+                .decorated_cache
+                .iter()
+                .map(|entry| entry.source.len() + entry.result.len())
+                .sum::<usize>()
+                > 4 * 1024 * 1024
+        {
+            self.decorated_cache.pop_front();
+        }
+        result
     }
 
     fn decorate_layout(
@@ -478,11 +530,14 @@ fn resolve_parsed_text_runs(
         let mut current_utf16_start = span_utf16_start;
         let mut utf16_index = span_utf16_start;
         let mut current_adjustment: Option<FontAdjustment> = None;
-        for (relative_index, character) in text[span.range.clone()].char_indices() {
+        for (relative_index, cluster) in unicode_segmentation::UnicodeSegmentation::grapheme_indices(
+            &text[span.range.clone()],
+            true,
+        ) {
             let index = span.range.start + relative_index;
-            let utf16_end = utf16_index + character.len_utf16();
+            let utf16_end = utf16_index + cluster.encode_utf16().count();
             let adjustment =
-                resolved_adjustment_for_format(profile, character, &span.format, coverage);
+                resolved_adjustment_for_cluster(profile, cluster, &span.format, coverage);
             match current_adjustment {
                 Some(ref current) if current != &adjustment => {
                     runs.push(ResolvedTextRun {
@@ -519,20 +574,25 @@ fn resolve_parsed_text_runs(
     runs
 }
 
-fn resolved_adjustment_for_format(
+fn resolved_adjustment_for_cluster(
     profile: &CompositeFontProfile,
-    character: char,
+    cluster: &str,
     format: &TextFormatState,
     coverage: &mut dyn GlyphCoverage,
 ) -> FontAdjustment {
+    let character = cluster.chars().next().expect("nonempty grapheme");
     if format.profile_font_allowed() {
-        resolved_adjustment(profile, character, coverage)
+        resolved_adjustment_for_cluster_with_index(profile, cluster, coverage).0
     } else {
         let mut adjustment = profile
-            .adjustment_for(classify_character(character))
-            .clone();
+            .adjustment_for_character(character)
+            .cloned()
+            .unwrap_or_else(FontAdjustment::neutral);
         if adjustment.font_family.is_empty() {
-            return FontAdjustment::neutral();
+            return FontAdjustment {
+                disable_ligatures: adjustment.disable_ligatures,
+                ..FontAdjustment::neutral()
+            };
         }
         adjustment.fallback_font_families.clear();
         adjustment
@@ -579,13 +639,17 @@ fn layout_glyph_overrides(
             line.clear();
             continue;
         };
-        for (relative_start, character) in source[run.range.utf8.clone()].char_indices() {
+        for (relative_start, cluster) in unicode_segmentation::UnicodeSegmentation::grapheme_indices(
+            &source[run.range.utf8.clone()],
+            true,
+        ) {
+            let character = cluster.chars().next().expect("nonempty grapheme");
             if character.is_control() {
                 continue;
             }
             let start = run.range.utf8.start + relative_start;
             line.push(LineLayoutCharacter {
-                utf8: start..start + character.len_utf8(),
+                utf8: start..start + cluster.len(),
                 character,
                 adjustment,
                 input_format: &run.input_format,
@@ -786,31 +850,76 @@ fn is_visible_layout_character(character: char) -> bool {
     !character.is_whitespace() && !character.is_control()
 }
 
-fn resolved_adjustment(
-    profile: &CompositeFontProfile,
-    character: char,
-    coverage: &mut dyn GlyphCoverage,
-) -> FontAdjustment {
-    resolved_adjustment_with_index(profile, character, coverage).0
-}
-
 fn resolved_adjustment_with_index(
     profile: &CompositeFontProfile,
     character: char,
     coverage: &mut dyn GlyphCoverage,
 ) -> (FontAdjustment, usize) {
+    let mut encoded = [0u8; 4];
+    resolved_adjustment_for_cluster_with_index(
+        profile,
+        character.encode_utf8(&mut encoded),
+        coverage,
+    )
+}
+
+fn resolved_adjustment_for_cluster_with_index(
+    profile: &CompositeFontProfile,
+    cluster: &str,
+    coverage: &mut dyn GlyphCoverage,
+) -> (FontAdjustment, usize) {
+    use icu_properties::{CodePointSetData, props::DefaultIgnorableCodePoint};
+    let character = cluster.chars().next().expect("nonempty grapheme");
+    let ignorable = CodePointSetData::new::<DefaultIgnorableCodePoint>();
+    let normalized = icu_normalizer::ComposingNormalizer::new_nfc().normalize(cluster);
     let class = classify_character(character);
 
     let mut last = (FontAdjustment::neutral(), 0);
     let mut first_unknown = None;
-    for (index, adjustment) in adjustments_for_class(profile, class)
-        .into_iter()
-        .enumerate()
-    {
+    let candidates = if let Some((_, range)) = profile.matching_range(character) {
+        let mut primary = range.adjustment.clone();
+        let legacy = std::mem::take(&mut primary.fallback_font_families);
+        let mut candidates = vec![primary.clone()];
+        candidates.extend(legacy.into_iter().map(|family| {
+            let mut a = primary.clone();
+            a.font_family = family;
+            a
+        }));
+        candidates
+    } else if profile.class_enabled(class) {
+        adjustments_for_class(profile, class)
+    } else {
+        Vec::new()
+    };
+    for (index, adjustment) in candidates.into_iter().enumerate() {
         if adjustment.font_family.is_empty() {
+            if adjustment.disable_ligatures {
+                return (
+                    FontAdjustment {
+                        disable_ligatures: true,
+                        ..FontAdjustment::neutral()
+                    },
+                    index,
+                );
+            }
             continue;
         }
-        let result = coverage.has_glyph(&adjustment.font_family, character);
+        // A font must cover the whole grapheme, including dependent vowels
+        // and marks. Joiners, selectors and bidi controls have no own glyph.
+        let mut result = Some(true);
+        for c in normalized
+            .chars()
+            .filter(|c| !c.is_control() && !ignorable.contains(*c))
+        {
+            match coverage.has_glyph(&adjustment.font_family, c) {
+                Some(false) => {
+                    result = Some(false);
+                    break;
+                }
+                None => result = None,
+                Some(true) => {}
+            }
+        }
         last = (adjustment, index);
         match result {
             Some(true) => return last,
@@ -1133,7 +1242,14 @@ fn write_control_tag_fragment(
         write_relative_position_tag(output, -baseline_shift);
     }
 
+    if adjustment.disable_ligatures {
+        // Internal render tag: never written back into the host source.
+        output.push_str("<cf_liga0>");
+    }
     output.push_str(&source[range]);
+    if adjustment.disable_ligatures {
+        output.push_str("<cf_liga>");
+    }
 
     if has_baseline {
         output.push_str("<p>");
@@ -1313,12 +1429,19 @@ impl IntoScriptModuleReturnValue for ScriptResolvedFont {
 #[aviutl2::plugin(ScriptModule)]
 pub struct CompositeFontModule {
     profiles: Mutex<ReloadableProfiles>,
+    render_cache: Mutex<
+        std::collections::VecDeque<(
+            render::RenderRequest,
+            Option<std::sync::Arc<render::Bitmap>>,
+        )>,
+    >,
 }
 
 impl ScriptModule for CompositeFontModule {
     fn new(_info: aviutl2::AviUtl2Info) -> aviutl2::AnyResult<Self> {
         Ok(Self {
             profiles: Mutex::new(ReloadableProfiles::new(profile_path())),
+            render_cache: Mutex::new(std::collections::VecDeque::new()),
         })
     }
 
@@ -1333,8 +1456,151 @@ impl ScriptModule for CompositeFontModule {
     }
 }
 
+impl CompositeFontModule {
+    fn render_cached(
+        &self,
+        section: &aviutl2::generic::ReadSection,
+        request: render::RenderRequest,
+    ) -> Option<aviutl2::module::ScriptModuleUserData<render::RenderedText>> {
+        let mut cache = self.render_cache.lock().ok()?;
+        if let Some(index) = cache.iter().position(|(key, _)| key == &request) {
+            let entry = cache.remove(index)?;
+            let bitmap = entry.1.clone();
+            cache.push_back(entry);
+            return bitmap.map(|bitmap| render::RenderedText { bitmap }.into());
+        }
+        let bitmap = match render::render(section, &request) {
+            Ok(bitmap) => bitmap.map(std::sync::Arc::new),
+            Err(error) => {
+                let _ =
+                    aviutl2::logger::write_error_log(&format!("comfont anm2 renderer: {error}"));
+                None
+            }
+        };
+        cache.push_back((request, bitmap.clone()));
+        while cache.len() > 16
+            || cache
+                .iter()
+                .filter_map(|(_, b)| b.as_ref())
+                .map(|b| b.bgra.len())
+                .sum::<usize>()
+                > 64 * 1024 * 1024
+        {
+            cache.pop_front();
+        }
+        bitmap.map(|bitmap| render::RenderedText { bitmap }.into())
+    }
+}
+
 #[aviutl2::module::functions]
 impl CompositeFontModule {
+    fn profile_names(&self) -> Vec<String> {
+        let Ok(mut profiles) = self.profiles.lock() else {
+            return Vec::new();
+        };
+        profiles.refresh_if_changed();
+        profiles.store.profiles().map(|p| p.name.clone()).collect()
+    }
+
+    fn profile_name(&self, selection: i32, saved_label: Option<String>) -> Option<String> {
+        if selection < 0 {
+            return None;
+        }
+        let Ok(mut profiles) = self.profiles.lock() else {
+            return None;
+        };
+        profiles.refresh_if_changed();
+        let mut matches = profiles
+            .store
+            .profiles()
+            .filter(|p| compositefont_core::profile_selection_id(&p.name) == selection);
+        let result = matches.next()?.name.clone();
+        // A hash collision must fail closed, never select an arbitrary profile.
+        if matches.next().is_some() {
+            return None;
+        }
+        if saved_label
+            .is_some_and(|label| label != compositefont_core::profile_selection_label(&result))
+        {
+            return None;
+        }
+        Some(result)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_text(
+        &self,
+        text: String,
+        profile: String,
+        font: String,
+        size: f64,
+        spacing: f64,
+        line_spacing: f64,
+        color: String,
+        align: i32,
+        bold: bool,
+        italic: bool,
+        section: &aviutl2::generic::ReadSection,
+    ) -> Option<aviutl2::module::ScriptModuleUserData<render::RenderedText>> {
+        let profile = {
+            let mut profiles = self.profiles.lock().ok()?;
+            profiles.refresh_if_changed();
+            profiles.store.profile(Some(&profile)).ok()?.clone()
+        };
+        let request = render::RenderRequest {
+            text,
+            profile: Some(profile),
+            font,
+            size,
+            spacing,
+            line_spacing,
+            color,
+            align,
+            bold,
+            italic,
+            disable_ligatures: false,
+        };
+        self.render_cached(section, request)
+    }
+
+    fn decode_text(&self, alias_text: String) -> String {
+        render::decode_alias(&alias_text)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_decorated(
+        &self,
+        text: String,
+        font: String,
+        size: f64,
+        spacing: f64,
+        line_spacing: f64,
+        color: String,
+        align: i32,
+        bold: bool,
+        italic: bool,
+        disable_ligatures: Option<bool>,
+        section: &aviutl2::generic::ReadSection,
+    ) -> Option<aviutl2::module::ScriptModuleUserData<render::RenderedText>> {
+        // No profile is accepted here: only decorate's generated text is rendered.
+        self.render_cached(
+            section,
+            render::RenderRequest {
+                text,
+                profile: None,
+                font,
+                size,
+                spacing,
+                line_spacing,
+                color,
+                align,
+                bold,
+                italic,
+                disable_ligatures: disable_ligatures.unwrap_or(false),
+            },
+        )
+    }
+
     fn api_version() -> i32 {
         API_VERSION
     }
@@ -1492,6 +1758,9 @@ mod tests {
         let latin = adjustment("Latin", 1.15, 0.02, 0.05, 0.9, 1.1);
         let japanese = adjustment("Japanese", 1.0, 0.0, 0.0, 1.0, 1.0);
         CompositeFontProfile {
+            custom_ranges: Vec::new(),
+            disabled_classes: Vec::new(),
+            class_order: Vec::new(),
             name: "subtitle".to_owned(),
             western: latin.clone(),
             western_fallbacks: Vec::new(),
@@ -2459,12 +2728,113 @@ mod tests {
     }
 
     #[test]
+
+    fn decorate_result_is_cached_and_updates_for_source_profile_and_base_metrics() {
+        let mut profile = decoration_profile();
+        let mut profiles = ReloadableProfiles {
+            store: ProfileStore::from_profiles([profile.clone()]),
+            path: temporary_profile_path(),
+            observed_modified: None,
+            last_checked: Instant::now(),
+            decorated_cache: std::collections::VecDeque::new(),
+        };
+        let mut coverage = TestCoverage::default();
+        let original = String::from("A国");
+        let first = profiles.decorate(
+            &original,
+            Some("subtitle"),
+            Some(100.0),
+            Some(3.0),
+            &mut coverage,
+        );
+        let queries = coverage.glyph_queries.len();
+        assert!(queries > 0);
+        assert_eq!(
+            profiles.decorate(
+                &original,
+                Some("subtitle"),
+                Some(100.0),
+                Some(3.0),
+                &mut coverage
+            ),
+            first
+        );
+        assert_eq!(coverage.glyph_queries.len(), queries);
+        assert_eq!(original, "A国"); // Source is never replaced by the generated text.
+        let parsed = control_text::parse_decorated_control_text(
+            &first,
+            ControlTextDefaults {
+                font_size: Some(100.0),
+                font_family: Some("Object Font".into()),
+            },
+        )
+        .unwrap();
+        let latin = &parsed.spans[0].format;
+        assert_eq!(latin.effective_font_family(), Some("Latin"));
+        assert!((latin.effective_font_size().unwrap() - 115.0).abs() < 1e-9);
+        assert_eq!(latin.render_layout.tracking, Some(8.0));
+        assert_eq!(latin.render_layout.offset_y, -2.0);
+        assert_ne!(
+            profiles.decorate(
+                "B国",
+                Some("subtitle"),
+                Some(100.0),
+                Some(3.0),
+                &mut coverage
+            ),
+            first
+        );
+        assert_ne!(
+            profiles.decorate(
+                &original,
+                Some("subtitle"),
+                Some(50.0),
+                Some(3.0),
+                &mut coverage
+            ),
+            first
+        );
+        assert_ne!(
+            profiles.decorate(
+                &original,
+                Some("subtitle"),
+                Some(100.0),
+                Some(4.0),
+                &mut coverage
+            ),
+            first
+        );
+        profile.western.font_family = "Updated Latin".into();
+        profiles.store = ProfileStore::from_profiles([profile]);
+        let updated = profiles.decorate(
+            &original,
+            Some("subtitle"),
+            Some(100.0),
+            Some(3.0),
+            &mut coverage,
+        );
+        assert!(updated.contains("<@Updated Latin>"));
+        assert_ne!(updated, first);
+        assert_eq!(
+            profiles.decorate(
+                &original,
+                Some("missing"),
+                Some(100.0),
+                Some(3.0),
+                &mut coverage
+            ),
+            original
+        );
+    }
+
+    #[test]
     fn missing_profile_fails_open() {
         let mut profiles = ReloadableProfiles {
             store: ProfileStore::from_profiles([decoration_profile()]),
             path: PathBuf::from("missing-profile-file.json"),
             observed_modified: None,
             last_checked: Instant::now(),
+            decorated_cache: std::collections::VecDeque::new(),
         };
         let mut coverage = UnknownGlyphCoverage;
         assert_eq!(
@@ -2477,5 +2847,172 @@ mod tests {
             ),
             "国LINE"
         );
+    }
+
+    #[test]
+    fn custom_range_rendering_wins_over_classification_and_input_tags_win_over_it() {
+        let mut profile = decoration_profile();
+        let custom = adjustment("Custom", 1.25, 0.0, 0.0, 1.0, 1.0);
+        profile
+            .custom_ranges
+            .push(compositefont_core::UnicodeRange {
+                name: "Latin".to_owned(),
+                start: 0x41,
+                end: 0x5A,
+                adjustment: custom,
+            });
+        let decorated = decorate_plain_text("ABC漢", &profile, Some(64.0), Some(0.0));
+        assert!(decorated.contains("Custom"));
+        assert!(decorated.contains("Japanese"));
+        let tagged = decorate_plain_text("<@Input>ABC<@>", &profile, Some(64.0), Some(0.0));
+        assert!(tagged.contains("Input"));
+        assert!(!tagged.contains("Custom"));
+        profile.custom_ranges[0].adjustment = FontAdjustment::neutral();
+        assert_eq!(
+            decorate_plain_text("ABC", &profile, Some(64.0), Some(0.0)),
+            "ABC"
+        );
+        profile.disabled_classes = vec![compositefont_core::CharacterClass::Kanji];
+        assert_eq!(
+            decorate_plain_text("ABC漢", &profile, Some(64.0), Some(0.0)),
+            "ABC漢"
+        );
+    }
+    #[test]
+    fn oriya_preset_decorates_lla_for_the_render_path() {
+        let preset = compositefont_core::UNICODE_PRESETS
+            .iter()
+            .find(|preset| preset.block_name == "Oriya")
+            .unwrap();
+        let mut profile = CompositeFontProfile::neutral_default();
+        profile
+            .custom_ranges
+            .push(compositefont_core::UnicodeRange {
+                name: preset.name.to_owned(),
+                start: preset.start,
+                end: preset.end,
+                adjustment: adjustment("Noto Sans Oriya", 1.2, 0.0, 0.0, 1.0, 1.0),
+            });
+        let mut coverage = TestCoverage::default();
+        coverage
+            .values
+            .insert(("Noto Sans Oriya".into(), 'ଳ'), true);
+        let original = "ଳ".to_owned();
+        assert_eq!('ଳ' as u32, 0x0b33);
+        let decorated = decorate_plain_text_with_coverage(
+            &original,
+            &profile,
+            Some(32.0),
+            Some(0.0),
+            &mut coverage,
+        );
+        assert_eq!(original, "ଳ");
+        assert!(decorated.contains("<@Noto Sans Oriya>"));
+        let parsed = control_text::parse_decorated_control_text(
+            &decorated,
+            ControlTextDefaults {
+                font_size: Some(32.0),
+                font_family: Some("Yu Gothic UI".into()),
+            },
+        )
+        .unwrap();
+        assert!(!parsed.spans.is_empty());
+        let visible = parsed
+            .spans
+            .iter()
+            .find(|span| &decorated[span.range.clone()] == "ଳ")
+            .unwrap();
+        assert_eq!(
+            visible.format.effective_font_family(),
+            Some("Noto Sans Oriya")
+        );
+        assert!((visible.format.effective_font_size().unwrap() - 38.4).abs() < 1e-9);
+    }
+    #[test]
+    fn decoration_assigns_one_font_to_the_whole_grapheme_and_preserves_source_ranges() {
+        let mut profile = CompositeFontProfile::neutral_default();
+        profile.western = adjustment("Latin", 1.0, 0.0, 0.0, 1.0, 1.0);
+        profile
+            .custom_ranges
+            .push(compositefont_core::UnicodeRange {
+                name: "Marks".into(),
+                start: 0x0300,
+                end: 0x036f,
+                adjustment: adjustment("Marks", 1.0, 0.0, 0.0, 1.0, 1.0),
+            });
+        let text = "e\u{301}𠮷";
+        let mut coverage = TestCoverage::default();
+        let runs = resolve_text_runs(text, &profile, &mut coverage);
+        assert_eq!(runs[0].range.utf8, 0..3);
+        assert_eq!(runs[0].range.utf16, 0..2);
+        assert_eq!(runs[1].range.utf16, 2..4);
+        let decorated =
+            decorate_plain_text_with_coverage(text, &profile, Some(32.0), Some(0.0), &mut coverage);
+        assert_eq!(decorated, "<@Latin>e\u{301}<@>𠮷");
+        assert_eq!(text, "e\u{301}𠮷");
+    }
+
+    #[test]
+    fn fallback_requires_coverage_of_dependent_marks_and_ignores_joiners() {
+        let mut profile = CompositeFontProfile::neutral_default();
+        profile.western = adjustment("BaseOnly", 1.0, 0.0, 0.0, 1.0, 1.0);
+        profile
+            .western_fallbacks
+            .push(adjustment("Complete", 1.0, 0.0, 0.0, 1.0, 1.0));
+        let mut coverage = TestCoverage::default();
+        for (family, c, has) in [
+            ("BaseOnly", 'e', true),
+            ("BaseOnly", '\u{301}', false),
+            ("Complete", 'e', true),
+            ("Complete", '\u{301}', true),
+            ("BaseOnly", 'é', false),
+            ("Complete", 'é', true),
+        ] {
+            coverage.values.insert((family.into(), c), has);
+        }
+        assert_eq!(
+            decorate_plain_text_with_coverage(
+                "e\u{301}",
+                &profile,
+                Some(32.0),
+                Some(0.0),
+                &mut coverage
+            ),
+            "<@Complete>e\u{301}<@>"
+        );
+        profile.other = adjustment("Oriya", 1.0, 0.0, 0.0, 1.0, 1.0);
+        coverage.values.insert(("Oriya".into(), 'ଳ'), true);
+        assert_eq!(
+            decorate_plain_text_with_coverage(
+                "ଳ\u{200d}",
+                &profile,
+                Some(32.0),
+                Some(0.0),
+                &mut coverage
+            ),
+            "<@Oriya>ଳ\u{200d}<@>"
+        );
+        assert!(!coverage.glyph_queries.iter().any(|(_, c)| *c == '\u{200d}'));
+    }
+
+    #[test]
+    fn indic_conjuncts_are_not_split_by_profile_decoration() {
+        let mut profile = CompositeFontProfile::neutral_default();
+        profile.other = adjustment("Nirmala UI", 1.25, 0.1, 0.0, 1.0, 1.0);
+        profile
+            .custom_ranges
+            .push(compositefont_core::UnicodeRange {
+                name: "Virama".into(),
+                start: 0x094d,
+                end: 0x094d,
+                adjustment: adjustment("WrongFont", 1.0, 0.0, 0.0, 1.0, 1.0),
+            });
+        let source = "क्ष";
+        let decorated = decorate_plain_text(source, &profile, Some(32.0), Some(0.0));
+        assert!(decorated.contains(source));
+        assert!(!decorated.contains("WrongFont"));
+        let runs = resolve_text_runs(source, &profile, &mut UnknownGlyphCoverage);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].range.utf16, 0..3);
     }
 }
