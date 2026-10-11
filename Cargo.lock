@@ -625,7 +625,7 @@ dependencies = [
 
 [[package]]
 name = "compositefont-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "serde",
  "thiserror 2.0.19",
@@ -633,7 +633,7 @@ dependencies = [
 
 [[package]]
 name = "compositefont-editor-plugin"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "aviutl2",
  "compositefont-core",
@@ -646,13 +646,14 @@ dependencies = [
 
 [[package]]
 name = "compositefont-module-plugin"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "aviutl2",
  "compositefont-core",
  "icu_normalizer",
  "icu_properties",
+ "libloading",
  "serde_json",
  "unicode-segmentation",
  "windows 0.62.2",

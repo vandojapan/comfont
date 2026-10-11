@@ -1,5 +1,6 @@
 mod control_text;
 mod font_coverage;
+mod generated_text;
 pub mod preview;
 mod render;
 mod shaping;
@@ -23,7 +24,7 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-const API_VERSION: i32 = 13;
+const API_VERSION: i32 = 15;
 // AviUtl2 rasterizes text size at twice the value reported by obj.getfont(),
 // while gw and the resulting object bounds use pixel units.
 const TEXT_RASTER_SIZE_SCALE: f64 = 2.0;
@@ -1429,6 +1430,7 @@ impl IntoScriptModuleReturnValue for ScriptResolvedFont {
 #[aviutl2::plugin(ScriptModule)]
 pub struct CompositeFontModule {
     profiles: Mutex<ReloadableProfiles>,
+    generated_text: Mutex<generated_text::GeneratedTextCache>,
     render_cache: Mutex<
         std::collections::VecDeque<(
             render::RenderRequest,
@@ -1441,6 +1443,7 @@ impl ScriptModule for CompositeFontModule {
     fn new(_info: aviutl2::AviUtl2Info) -> aviutl2::AnyResult<Self> {
         Ok(Self {
             profiles: Mutex::new(ReloadableProfiles::new(profile_path())),
+            generated_text: Mutex::new(generated_text::GeneratedTextCache::default()),
             render_cache: Mutex::new(std::collections::VecDeque::new()),
         })
     }
@@ -1494,6 +1497,52 @@ impl CompositeFontModule {
 
 #[aviutl2::module::functions]
 impl CompositeFontModule {
+    fn forget_text(&self, object_id: String, frame: f64) -> bool {
+        let Ok(mut cache) = self.generated_text.lock() else {
+            return false;
+        };
+        cache.forget(&object_id, frame);
+        true
+    }
+
+    fn capture_text(
+        &self,
+        text: String,
+        object_id: String,
+        frame: f64,
+        source: String,
+        producer_source: Option<String>,
+        producer_effect: Option<String>,
+    ) -> bool {
+        let producer = producer_source.map(|script| {
+            (
+                producer_effect.unwrap_or_else(|| "スクリプト制御".to_owned()),
+                script,
+            )
+        });
+        self.generated_text
+            .lock()
+            .is_ok_and(|mut cache| cache.capture_from(text, object_id, frame, source, producer))
+    }
+
+    fn generated_text(
+        &self,
+        object_id: String,
+        frame: f64,
+        source: String,
+    ) -> (Option<String>, Option<String>, Option<String>) {
+        let Ok(mut cache) = self.generated_text.lock() else {
+            return (None, None, None);
+        };
+        let text = cache.get(&object_id, frame, &source);
+        let (effect, script) = cache
+            .producer(&object_id, frame, &source)
+            .map_or((None, None), |(effect, script)| {
+                (Some(effect), Some(script))
+            });
+        (text, effect, script)
+    }
+
     fn profile_names(&self) -> Vec<String> {
         let Ok(mut profiles) = self.profiles.lock() else {
             return Vec::new();

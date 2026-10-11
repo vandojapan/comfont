@@ -3,7 +3,7 @@
 [project]
 id = "vandojapan.comfont"
 name = "comfont"
-version = "0.3.0"
+version = "0.3.1"
 
 [development]
 aviutl2_version = "latest"
@@ -43,7 +43,27 @@ placement_method = "copy"
 source = "scripts/合成フォント.anm2"
 
 [artifacts.compositefont-profile-anm2.profiles.release]
-source = "scripts/合成フォント.anm2"
+enabled = false
+
+[artifacts.comfont-pipeline-anm2]
+destination = "Script/@comfont.anm2"
+placement_method = "copy"
+
+[artifacts.comfont-pipeline-anm2.profiles.debug]
+source = "scripts/@comfont.anm2"
+
+[artifacts.comfont-pipeline-anm2.profiles.release]
+source = "scripts/@comfont.anm2"
+
+[artifacts.compositefont-subtitle-object]
+destination = "Alias/合成フォント字幕.object"
+placement_method = "copy"
+
+[artifacts.compositefont-subtitle-object.profiles.debug]
+source = "scripts/合成フォント字幕.object"
+
+[artifacts.compositefont-subtitle-object.profiles.release]
+source = "scripts/合成フォント字幕.object"
 
 [artifacts.material-icons-license]
 destination = "Plugin/comfont-licenses/material-icons.txt"

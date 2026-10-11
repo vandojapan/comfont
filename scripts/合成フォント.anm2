@@ -4,7 +4,7 @@
 -- 原文は標準テキストに保持。制御文字は描画用にだけ生成し、書き戻さない。
 if type(profile) ~= "string" or profile == "" then return end
 local ok, module = pcall(obj.module, "compositefont")
-if not ok or not module or module.api_version() < 13 then return end
+if not ok or not module or module.api_version() < 14 then return end
 local function value(item) return obj.getvalue("テキスト", item) end
 local function enabled(item)
     local v = value(item)
@@ -28,11 +28,24 @@ local spacing = tonumber(value("字間")) or 0
 if not size or size < 1 or size > 512 then return end
 local decoded, original = pcall(module.decode_text, raw)
 if not decoded then return end
+-- スクリプト制御はこの効果より前へ置く。本文スクリプトも再実行しない。
+local captured, generated, producer, producer_source = pcall(module.generated_text, tostring(obj.id), obj.frame, raw)
+if captured and type(producer) == "string" then
+    -- 無効化・削除・コード変更後は、その生成元の古い結果を使わない。
+    local found, current = pcall(obj.getvalue, producer, "スクリプト")
+    if not found or current ~= producer_source then generated = nil end
+end
+local has_generated = captured and type(generated) == "string"
+if has_generated then
+    original = generated -- 生成本文はalias表現ではないので再復号しない。
+elseif original:find("<?", 1, true) then
+    return -- 連携されていないLua本文はホストの通常表示を維持する。
+end
 local force = disable_ligatures == true or disable_ligatures == 1 or disable_ligatures == "1"
 local decorated_ok, display_text = pcall(module.decorate, original, profile, size / 2, spacing)
 if not decorated_ok or type(display_text) ~= "string" then return end
 if display_text == original then
-    if not force then return end
+    if not force and not has_generated then return end
     -- 空の装飾でも解除は有効。ただし存在しないプロファイルは通常表示へ戻す。
     local found = false
     for _, name in ipairs(module.profile_names()) do
