@@ -8,9 +8,9 @@ $variant = 'beta'
 $flavor = 'release'
 $stageDir = Join-Path $projectRoot ('target/package-' + $variant)
 [IO.Directory]::CreateDirectory($stageDir) | Out-Null
-$ini = '[package]' + [Environment]::NewLine + 'id=vandojapan.comfont' + [Environment]::NewLine + 'name=comfont' + [Environment]::NewLine + 'information=comfont v0.2.0 β' + [Environment]::NewLine + 'uninstallSubFolderFile=0' + [Environment]::NewLine
+$ini = '[package]' + [Environment]::NewLine + 'id=vandojapan.comfont' + [Environment]::NewLine + 'name=comfont' + [Environment]::NewLine + 'information=comfont v0.3.0 β' + [Environment]::NewLine + 'uninstallSubFolderFile=0' + [Environment]::NewLine
 [IO.File]::WriteAllText((Join-Path $stageDir 'package.ini'), $ini, [Text.UTF8Encoding]::new($false))
-$zipPath = Join-Path $releaseDir ('vandojapan.comfont-v0.2.0-' + $variant + '.au2pkg.zip')
+$zipPath = Join-Path $releaseDir ('vandojapan.comfont-v0.3.0-' + $variant + '.au2pkg.zip')
 $stream = [IO.File]::Open($zipPath, [IO.FileMode]::Create)
 $zip = [IO.Compression.ZipArchive]::new($stream, [IO.Compression.ZipArchiveMode]::Create)
 try {

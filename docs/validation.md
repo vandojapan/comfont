@@ -51,6 +51,6 @@ cargo clippy --workspace --all-targets --all-features --offline -- -D warnings
 
 ## パッケージ
 
-- `release/vandojapan.comfont-v0.2.0-beta.au2pkg.zip`: egui β / Release。
+- `release/vandojapan.comfont-v0.3.0-beta.au2pkg.zip`: egui β / Release。
 
 aux2・anm2・ライセンス計6ファイルを含み、暫定object・検証obj2は含めません。更新後はAviUtl2を再起動してください。
