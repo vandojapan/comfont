@@ -40,13 +40,13 @@ fn lua_generated_text_pipeline() {
         let state = new_state();
         assert!(!state.is_null());
         open_libs(state);
-        let legacy = include_str!("../../../scripts/合成フォント.anm2");
         let bundle = include_str!("../../../scripts/@comfont.anm2");
         let (pipe, anm2) = bundle.split_once("\n@描画\n").unwrap();
         let pipe = pipe.strip_prefix("@パイプ\n").unwrap();
         let alias = include_str!("../../../scripts/合成フォント字幕.object");
+        let snippet = include_str!("../../../scripts/comfont-inline-snippet.lua");
         let script = format!(
-            "anm2_source = [====[{anm2}]====]\nlegacy_anm2_source = [====[{legacy}]====]\npipe_source = [====[{pipe}]====]\nsubtitle_alias = [====[{alias}]====]\n{}",
+            "anm2_source = [====[{anm2}]====]\npipe_source = [====[{pipe}]====]\nsubtitle_alias = [====[{alias}]====]\ninline_snippet = [====[{snippet}]====]\n{}",
             include_str!("../../../tests/lua/script_pipeline.lua")
         );
         let loaded = load(

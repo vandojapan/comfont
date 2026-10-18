@@ -1,4 +1,4 @@
-//! Shared DirectWrite text shaping and rasterization for the object and preview.
+//! DirectWrite text shaping and rasterization for the settings preview.
 //! Layout, including script analysis, clusters, kerning and bidi, stays in
 //! DirectWrite. We only paint the glyph runs returned by its text renderer.
 use crate::render::Bitmap;
@@ -12,6 +12,9 @@ use windows::{
     },
     core::{BOOL, ComObject, HSTRING, IUnknown, Interface, Ref, Result, implement},
 };
+
+const MAX_IMAGE_SIDE: i32 = 8192;
+const MAX_IMAGE_PIXELS: usize = 16_777_216;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct TextStyle {
@@ -30,7 +33,7 @@ impl TextStyle {
     pub fn valid(&self) -> bool {
         !self.family.is_empty()
             && self.size.is_finite()
-            && (0.01..=1024.0).contains(&self.size)
+            && (0.01..=4096.0).contains(&self.size)
             && self.horizontal.is_finite()
             && (0.01..=10.0).contains(&self.horizontal)
             && self.vertical.is_finite()
@@ -77,43 +80,6 @@ impl StyledText {
         }
     }
 }
-// Required script ligatures can ignore OpenType feature overrides. Force mode
-// inserts ZWNJ only into the transient layout text, including inside clusters.
-// Font/style ownership follows the original scalar and saved text is untouched.
-fn non_joining_text(text: &StyledText, force_all: bool) -> std::result::Result<StyledText, String> {
-    let source = String::from_utf16(&text.utf16).map_err(|e| e.to_string())?;
-    let mut characters = source.chars().peekable();
-    let mut result = StyledText {
-        modified: text.modified,
-        ..Default::default()
-    };
-    let mut source_offset = 0;
-    let mut range_index = 0;
-    while let Some(character) = characters.next() {
-        while text
-            .ranges
-            .get(range_index)
-            .is_some_and(|r| r.utf16.end <= source_offset)
-        {
-            range_index += 1;
-        }
-        let range = text.ranges.get(range_index).ok_or("Missing text style")?;
-        let mut segment = character.to_string();
-        if (force_all || range.style.disable_ligatures)
-            && !character.is_control()
-            && !character.is_whitespace()
-            && characters
-                .peek()
-                .is_some_and(|next| !next.is_control() && !next.is_whitespace())
-        {
-            segment.push('\u{200c}');
-        }
-        result.push(&segment, range.style.clone());
-        source_offset += character.len_utf16();
-    }
-    Ok(result)
-}
-
 pub(crate) trait Fonts {
     fn get(&mut self, family: &str) -> std::result::Result<IDWriteFont, String>;
 }
@@ -151,6 +117,38 @@ pub(crate) struct LayoutOptions {
     pub wrap_width: Option<f32>,
     pub glyph_guides: bool,
     pub disable_ligatures: bool,
+    pub force_ligatures: bool,
+    pub antialias: AntialiasMethod,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum AntialiasMethod {
+    #[default]
+    Natural,
+    NaturalSymmetric,
+    Aliased,
+}
+impl AntialiasMethod {
+    fn rendering_mode(self) -> DWRITE_RENDERING_MODE {
+        match self {
+            Self::Natural => DWRITE_RENDERING_MODE_NATURAL,
+            Self::NaturalSymmetric => DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC,
+            Self::Aliased => DWRITE_RENDERING_MODE_ALIASED,
+        }
+    }
+
+    fn texture_type(self) -> DWRITE_TEXTURE_TYPE {
+        match self {
+            Self::Aliased => DWRITE_TEXTURE_ALIASED_1x1,
+            Self::Natural | Self::NaturalSymmetric => DWRITE_TEXTURE_CLEARTYPE_3x1,
+        }
+    }
+
+    fn channels(self) -> usize {
+        match self {
+            Self::Aliased => 1,
+            Self::Natural | Self::NaturalSymmetric => 3,
+        }
+    }
 }
 pub(crate) struct Guide {
     pub bounds: RECT,
@@ -302,6 +300,7 @@ struct Renderer {
     factory: IDWriteFactory,
     ink: Mutex<Vec<InkRun>>,
     glyph_guides: bool,
+    antialias: AntialiasMethod,
 }
 impl IDWritePixelSnapping_Impl for Renderer_Impl {
     fn IsPixelSnappingDisabled(&self, _: *const c_void) -> Result<BOOL> {
@@ -382,13 +381,13 @@ impl IDWriteTextRenderer_Impl for Renderer_Impl {
                 run,
                 1.0,
                 Some(&transform),
-                DWRITE_RENDERING_MODE_NATURAL,
+                self.antialias.rendering_mode(),
                 mode,
                 0.0,
                 0.0,
             )
         }?;
-        let bounds = unsafe { analysis.GetAlphaTextureBounds(DWRITE_TEXTURE_CLEARTYPE_3x1) }?;
+        let bounds = unsafe { analysis.GetAlphaTextureBounds(self.antialias.texture_type()) }?;
         if [bounds.left, bounds.top, bounds.right, bounds.bottom]
             .iter()
             .any(|v| v.abs_diff(0) > 8192)
@@ -614,19 +613,22 @@ fn shaped_layout(
             factory.CreateTextLayout(
                 contents,
                 &format,
-                options.wrap_width.unwrap_or(4096.0),
-                4096.0,
+                options.wrap_width.unwrap_or(MAX_IMAGE_SIDE as f32),
+                MAX_IMAGE_SIDE as f32,
             )
         }
         .map_err(|e| e.to_string())?;
-        if options.disable_ligatures || text.ranges.iter().any(|r| r.style.disable_ligatures) {
+        if options.force_ligatures
+            || options.disable_ligatures
+            || text.ranges.iter().any(|r| r.style.disable_ligatures)
+        {
             let typography = unsafe { factory.CreateTypography() }.map_err(|e| e.to_string())?;
-            for tag in [*b"liga", *b"clig", *b"dlig", *b"hlig", *b"rlig"] {
+            for tag in [*b"liga", *b"clig", *b"dlig", *b"hlig"] {
                 unsafe {
                     typography
                         .AddFontFeature(DWRITE_FONT_FEATURE {
                             nameTag: DWRITE_FONT_FEATURE_TAG(u32::from_le_bytes(tag)),
-                            parameter: 0,
+                            parameter: u32::from(options.force_ligatures),
                         })
                         .map_err(|e| e.to_string())?;
                 }
@@ -634,7 +636,11 @@ fn shaped_layout(
             for range in &text.ranges {
                 let start = paragraph.start.max(range.utf16.start);
                 let end = paragraph.end.min(range.utf16.end);
-                if start < end && (options.disable_ligatures || range.style.disable_ligatures) {
+                if start < end
+                    && (options.force_ligatures
+                        || options.disable_ligatures
+                        || range.style.disable_ligatures)
+                {
                     unsafe {
                         layout
                             .SetTypography(
@@ -750,9 +756,9 @@ fn shaped_layout(
             layout.GetMetrics(&mut tm).map_err(|e| e.to_string())?;
         }
         if !tm.widthIncludingTrailingWhitespace.is_finite()
-            || tm.widthIncludingTrailingWhitespace > 4096.0
+            || tm.widthIncludingTrailingWhitespace > MAX_IMAGE_SIDE as f32
         {
-            return Err("Text image exceeds 4096 pixels".into());
+            return Err("Text image exceeds the width limit".into());
         }
         max_width = max_width.max(tm.widthIncludingTrailingWhitespace);
         // DirectWrite reports one line for an empty layout on Windows. Keep a
@@ -769,6 +775,7 @@ fn shaped_layout(
         factory: factory.clone(),
         ink: Mutex::new(Vec::new()),
         glyph_guides: options.glyph_guides,
+        antialias: options.antialias,
     });
     let interface = renderer.to_interface::<IDWriteTextRenderer>();
     for (layout, rtl, line) in layouts {
@@ -792,8 +799,8 @@ fn shaped_layout(
     let mut top = 0;
     let mut right = width.ceil().max(1.0) as i32;
     let logical_height = (total_lines.saturating_sub(1) as f32 * line_step + nominal_height).ceil();
-    if !logical_height.is_finite() || logical_height > 4096.0 {
-        return Err("Text image exceeds 4096 pixels".into());
+    if !logical_height.is_finite() || logical_height > MAX_IMAGE_SIDE as f32 {
+        return Err("Text image exceeds the height limit".into());
     }
     let mut bottom = logical_height.max(1.0) as i32;
     for run in &ink {
@@ -812,8 +819,11 @@ fn shaped_layout(
     }
     let width = right - left;
     let height = bottom - top;
-    if !(1..=4096).contains(&width) || !(1..=4096).contains(&height) {
-        return Err("Text image exceeds 4096 pixels".into());
+    if !(1..=MAX_IMAGE_SIDE).contains(&width)
+        || !(1..=MAX_IMAGE_SIDE).contains(&height)
+        || (width as usize) * (height as usize) > MAX_IMAGE_PIXELS
+    {
+        return Err("Text image exceeds the bitmap limit".into());
     }
     let mut bitmap = Bitmap {
         width,
@@ -828,19 +838,24 @@ fn shaped_layout(
         let gw = (bounds.right - bounds.left).max(0) as usize;
         let gh = (bounds.bottom - bounds.top).max(0) as usize;
         if gw != 0 && gh != 0 {
-            let mut alpha = vec![0u8; gw * gh * 3];
+            let channels = options.antialias.channels();
+            let mut alpha = vec![0u8; gw * gh * channels];
             unsafe {
                 run.analysis
-                    .CreateAlphaTexture(DWRITE_TEXTURE_CLEARTYPE_3x1, &bounds, &mut alpha)
+                    .CreateAlphaTexture(options.antialias.texture_type(), &bounds, &mut alpha)
                     .map_err(|e| e.to_string())?;
             }
             for y in 0..gh {
                 for x in 0..gw {
-                    let source = (y * gw + x) * 3;
-                    let a = ((u32::from(alpha[source])
-                        + u32::from(alpha[source + 1])
-                        + u32::from(alpha[source + 2]))
-                        / 3) as u8;
+                    let source = (y * gw + x) * channels;
+                    let a = if channels == 1 {
+                        alpha[source]
+                    } else {
+                        ((u32::from(alpha[source])
+                            + u32::from(alpha[source + 1])
+                            + u32::from(alpha[source + 2]))
+                            / 3) as u8
+                    };
                     let dx = bounds.left - left + x as i32;
                     let dy = bounds.top - top + y as i32;
                     blend(
@@ -888,26 +903,19 @@ pub(crate) fn rasterize(
 ) -> std::result::Result<ShapedBitmap, String> {
     if text.utf16.len() > 65536
         || !options.base_size.is_finite()
-        || !(0.01..=1024.0).contains(&options.base_size)
+        || !(0.01..=4096.0).contains(&options.base_size)
         || !(0..=2).contains(&options.column)
         || options
             .wrap_width
-            .is_some_and(|v| !v.is_finite() || !(1.0..=4096.0).contains(&v))
+            .is_some_and(|v| !v.is_finite() || !(1.0..=MAX_IMAGE_SIDE as f32).contains(&v))
     {
         return Err("Invalid text layout".into());
     }
     let factory: IDWriteFactory =
         unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED) }.map_err(|e| e.to_string())?;
-    if options.disable_ligatures || text.ranges.iter().any(|r| r.style.disable_ligatures) {
-        let separated = non_joining_text(text, options.disable_ligatures)?;
-        // The extra controls have no ink or advance; the same resource bound
-        // applies to the source, allowing at most one control per scalar.
-        shaped_layout(fonts, &factory, &separated, options)
-    } else {
-        shaped_layout(fonts, &factory, text, options)
-    }
+    shaped_layout(fonts, &factory, text, options)
 }
-// Keep straight BGRA, matching obj.putpixeldata rather than premultiplied D2D.
+// Preview composition uses straight BGRA rather than premultiplied D2D pixels.
 fn blend(dst: &mut [u8], color: u32, alpha: u8) {
     let a = u32::from(alpha);
     let old = u32::from(dst[3]);
@@ -1018,6 +1026,8 @@ mod tests {
             wrap_width: None,
             glyph_guides: false,
             disable_ligatures: false,
+            force_ligatures: false,
+            antialias: AntialiasMethod::Natural,
         }
     }
     fn draw(fonts: &mut TestFonts, text: &str, style: TextStyle) -> ShapedBitmap {
@@ -1143,167 +1153,165 @@ mod tests {
         assert!(advance(&av) < advance(&a) + advance(&v), "native kerning");
     }
     #[test]
-    fn non_joining_layout_preserves_source_styles_surrogates_and_paragraphs() {
-        let mut text = StyledText::default();
-        text.push("A𐐀", style("Segoe UI"));
-        text.push("\r\nଳି\u{2029}B", style("Nirmala UI"));
-        let original = text.utf16.clone();
-        let separated = non_joining_text(&text, true).unwrap();
-        let visible = String::from_utf16(&separated.utf16).unwrap();
-        assert_eq!(visible, "A\u{200c}𐐀\r\nଳ\u{200c}ି\u{2029}B");
-        assert_eq!(text.utf16, original);
-        assert_eq!(separated.ranges.len(), 2);
-        assert_eq!(separated.ranges[0].utf16, 0..4);
-        assert_eq!(separated.ranges[0].style.family, "Segoe UI");
-        assert_eq!(separated.ranges[1].utf16, 4..11);
-        assert_eq!(separated.ranges[1].style.family, "Nirmala UI");
-    }
-
-    #[test]
-    fn forced_ligature_disable_separates_latin_arabic_and_indic_glyphs() {
+    fn optional_ligatures_can_be_disabled_without_inserting_characters() {
         let mut fonts = TestFonts::new();
         for (text, family) in [
             ("ffi", "Calibri"),
             ("لا", "Arial"),
             ("କ୍ଷ", "Nirmala UI"),
             ("क्ष", "Nirmala UI"),
+            ("ଳି", "Nirmala UI"),
+            ("e\u{301}", "Segoe UI"),
+            ("漢字かなABC", "Yu Gothic UI"),
         ] {
             let mut plan = StyledText::default();
             plan.push(text, style(family));
-            let normal = rasterize(
-                &mut fonts,
-                &plan,
-                &LayoutOptions {
-                    glyph_guides: true,
-                    ..options()
-                },
-            )
-            .unwrap();
-            let separated = rasterize(
+            let original = plan.utf16.clone();
+            let normal = rasterize(&mut fonts, &plan, &options()).unwrap();
+            let disabled = rasterize(
                 &mut fonts,
                 &plan,
                 &LayoutOptions {
                     disable_ligatures: true,
-                    glyph_guides: true,
                     ..options()
                 },
             )
             .unwrap();
-            let count = |image: &ShapedBitmap| {
-                image
-                    .guides
-                    .iter()
-                    .filter(|g| g.bounds.right > g.bounds.left && g.bounds.bottom > g.bounds.top)
-                    .count()
-            };
-            eprintln!("{text}: {} -> {}", count(&normal), count(&separated));
+            check_shape(&normal, text);
+            check_shape(&disabled, text);
+            assert_eq!(plan.utf16, original);
+            let run_text: Vec<_> = disabled
+                .runs
+                .iter()
+                .flat_map(|r| r.text.iter().copied())
+                .collect();
             assert!(
-                count(&separated) > count(&normal),
-                "ligature was not separated: {text}"
+                !run_text.contains(&0x200c),
+                "an inserted ZWNJ can render tofu: {text}"
             );
-            assert_eq!(plan.utf16, text.encode_utf16().collect::<Vec<_>>());
-            assert!(ink(&separated) > 0);
+            if text == "ffi" {
+                assert!(disabled.runs.iter().map(|r| r.glyphs.len()).sum::<usize>() >= 3);
+                assert!(normal.runs.iter().map(|r| r.glyphs.len()).sum::<usize>() < 3);
+            }
+            if text == "لا" {
+                assert_eq!(
+                    normal.runs.iter().map(|r| r.glyphs.len()).sum::<usize>(),
+                    disabled.runs.iter().map(|r| r.glyphs.len()).sum::<usize>(),
+                    "required Arabic shaping must remain intact"
+                );
+            }
         }
     }
 
     #[test]
-    fn profile_ligature_switch_is_local_and_matches_decorated_rendering() {
-        use crate::render::{RenderRequest, layout_options, prepare};
-        use compositefont_core::{CompositeFontProfile, FontAdjustment, UnicodeRange};
+    fn opt_in_ligatures_override_saved_disable_and_support_both_antialias_modes() {
         let mut fonts = TestFonts::new();
-        let source = "ffi لا କ୍ଷ";
-        for family in ["", "Calibri"] {
-            let mut profile = CompositeFontProfile::neutral_default();
-            profile.western.font_family = family.into();
-            profile.western.disable_ligatures = true;
-            profile.other.font_family = "Arial".into();
-            profile.custom_ranges.push(UnicodeRange {
-                name: "Oriya".into(),
-                start: 0x0b00,
-                end: 0x0b7f,
-                adjustment: FontAdjustment {
-                    font_family: "Nirmala UI".into(),
-                    disable_ligatures: true,
-                    ..FontAdjustment::neutral()
+        let mut plan = StyledText::default();
+        let mut disabled_style = style("Calibri");
+        disabled_style.disable_ligatures = true;
+        plan.push("ffi", disabled_style);
+        let disabled = rasterize(&mut fonts, &plan, &options()).unwrap();
+        let glyph_count =
+            |image: &ShapedBitmap| image.runs.iter().map(|run| run.glyphs.len()).sum::<usize>();
+        for antialias in [AntialiasMethod::Natural, AntialiasMethod::NaturalSymmetric] {
+            let image = rasterize(
+                &mut fonts,
+                &plan,
+                &LayoutOptions {
+                    force_ligatures: true,
+                    antialias,
+                    ..options()
                 },
-            });
-            let request = RenderRequest {
-                text: source.into(),
-                profile: Some(profile.clone()),
-                font: "Calibri".into(),
-                size: 48.0,
-                spacing: 0.0,
-                line_spacing: 0.0,
-                color: "ffffff".into(),
-                align: 0,
-                bold: false,
-                italic: false,
-                disable_ligatures: false,
-            };
-            let decorated = crate::decorate_plain_text_with_coverage(
-                source,
-                &profile,
-                Some(24.0),
-                Some(0.0),
-                &mut Coverage(&mut fonts),
-            );
-            assert!(decorated.contains("<cf_liga0>"));
-            let generated_request = RenderRequest {
-                text: decorated.clone(),
-                profile: None,
-                ..request.clone()
-            };
-            let direct = prepare(&request, source, &mut Coverage(&mut fonts))
-                .unwrap()
-                .unwrap();
-            let generated = prepare(&generated_request, &decorated, &mut Coverage(&mut fonts))
-                .unwrap()
-                .unwrap();
-            assert_eq!(direct.utf16, source.encode_utf16().collect::<Vec<_>>());
-            assert_eq!(direct.utf16, generated.utf16);
-            assert_eq!(direct.ranges.len(), generated.ranges.len());
-            for (a, b) in direct.ranges.iter().zip(&generated.ranges) {
-                assert_eq!(a.utf16, b.utf16);
-                assert_eq!(a.style, b.style);
-            }
-            let mut layout = layout_options(&request, None);
-            layout.glyph_guides = true;
-            let a = rasterize(&mut fonts, &direct, &layout).unwrap();
-            let b = rasterize(&mut fonts, &generated, &layout).unwrap();
-            assert_eq!(
-                (a.bitmap.width, a.bitmap.height),
-                (b.bitmap.width, b.bitmap.height)
-            );
-            assert_eq!(a.bitmap.bgra, b.bitmap.bgra);
-            let count = |image: &ShapedBitmap| {
-                image
-                    .guides
-                    .iter()
-                    .filter(|g| g.bounds.right > g.bounds.left && g.bounds.bottom > g.bounds.top)
-                    .count()
-            };
-            assert_eq!(count(&a), 7, "only Latin and Oriya must separate");
-            layout.disable_ligatures = true;
-            let all = rasterize(&mut fonts, &generated, &layout).unwrap();
-            assert_eq!(count(&all), 8, "object force also separates Arabic");
-            profile.western.disable_ligatures = false;
-            profile.custom_ranges[0].adjustment.disable_ligatures = false;
-            let restored = prepare(
-                &RenderRequest {
-                    profile: Some(profile),
-                    ..request.clone()
-                },
-                source,
-                &mut Coverage(&mut fonts),
             )
-            .unwrap()
             .unwrap();
-            layout.disable_ligatures = false;
-            let normal = rasterize(&mut fonts, &restored, &layout).unwrap();
-            assert_eq!(count(&normal), 3);
+            check_shape(&image, "ffi");
+            assert!(glyph_count(&image) < glyph_count(&disabled));
+        }
+        assert_eq!(plan.utf16, "ffi".encode_utf16().collect::<Vec<_>>());
+    }
+    #[test]
+    fn antialias_methods_produce_distinct_object_pixels() {
+        let mut fonts = TestFonts::new();
+        for size in [16.0, 32.0, 96.0, 300.0] {
+            let mut text = StyledText::default();
+            let mut styled = style("Segoe UI");
+            styled.size = size;
+            text.push("Aa ffi 文字", styled);
+            let mut draw = |mode| {
+                rasterize(
+                    &mut fonts,
+                    &text,
+                    &LayoutOptions {
+                        base_size: size,
+                        force_ligatures: true,
+                        antialias: mode,
+                        ..options()
+                    },
+                )
+                .unwrap()
+            };
+            let natural = draw(AntialiasMethod::Natural);
+            let symmetric = draw(AntialiasMethod::NaturalSymmetric);
+            let aliased = draw(AntialiasMethod::Aliased);
+            let changed = natural
+                .bitmap
+                .bgra
+                .iter()
+                .zip(&symmetric.bitmap.bgra)
+                .filter(|(a, b)| a != b)
+                .count();
+            assert!(changed > 0, "mode change had no effect at size {size}");
+            assert_ne!(
+                aliased.bitmap.bgra, natural.bitmap.bgra,
+                "antialias off had no effect at size {size}"
+            );
+            assert!(
+                aliased
+                    .bitmap
+                    .bgra
+                    .chunks_exact(4)
+                    .all(|pixel| pixel[3] == 0 || pixel[3] == 255),
+                "aliased coverage was not bi-level at size {size}"
+            );
         }
     }
-
+    #[test]
+    fn opt_in_ligatures_shape_above_the_old_512_limit() {
+        let mut fonts = TestFonts::new();
+        let mut plan = StyledText::default();
+        let mut large = style("Calibri");
+        large.size = 640.0;
+        large.disable_ligatures = true;
+        plan.push("ffi", large);
+        let layout = LayoutOptions {
+            base_size: 640.0,
+            force_ligatures: true,
+            ..options()
+        };
+        let image = rasterize(&mut fonts, &plan, &layout).unwrap();
+        check_shape(&image, "ffi");
+        assert!(image.runs.iter().map(|run| run.glyphs.len()).sum::<usize>() < 3);
+    }
+    #[test]
+    fn opt_in_ligatures_keep_wide_lines_at_large_font_sizes() {
+        let mut fonts = TestFonts::new();
+        let mut plan = StyledText::default();
+        let mut large = style("Calibri");
+        large.size = 473.0;
+        plan.push(&"ffi ".repeat(9), large);
+        let image = rasterize(
+            &mut fonts,
+            &plan,
+            &LayoutOptions {
+                base_size: 473.0,
+                force_ligatures: true,
+                ..options()
+            },
+        )
+        .unwrap();
+        assert!(image.bitmap.width > 4096, "width={}", image.bitmap.width);
+        assert!(image.runs.iter().map(|run| run.glyphs.len()).sum::<usize>() < 27);
+    }
     #[test]
     fn preview_guides_follow_shaped_glyphs_and_separate_ink_from_logical_cells() {
         let mut fonts = TestFonts::new();

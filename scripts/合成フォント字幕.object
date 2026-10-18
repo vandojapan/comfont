@@ -12,7 +12,7 @@ effect.name=テキスト
 文字揃え=中央揃え[中]
 B=0
 I=0
-テキスト=<?local settings={\n    id="", -- セリフ準備のキャラクターID、または "L3" のようなレイヤー指定\n}\n-- プロファイルは後段の「描画@comfont」効果で指定する。\nlocal id=settings.id\nlocal voice=require("PSDToolKit.VoiceStates"):get(id)\nlocal restart_time=voice\n    and math.max(0,obj.time-(tonumber(voice.time) or 0))\n    or 0\nlocal wait_tag=string.format("<w%.9f>",restart_time)\nlocal ok,compositefont=pcall(obj.module,"compositefont")\nlocal source=obj.getvalue("テキスト","テキスト")\nlocal capture=ok and compositefont and compositefont.api_version()>=14\n    and type(source)=="string"\nlocal function submit(text)\n    if capture then\n        pcall(compositefont.capture_text,text,tostring(obj.id),obj.frame,source)\n    end\nend\n-- セリフがないフレームも空の本文を渡し、前回の結果を残さない。\nsubmit("")\nrequire("PSDToolKit").mes({\n    id=id,\n    modifier=function(text)\n        -- 表示速度0専用。すでに経過した先頭waitタグは通常表示だけに残す。\n        submit(text)\n        return wait_tag..text\n    end,\n},obj)?>
+テキスト=<?local settings={\n    id="", -- セリフ準備のキャラクターID、または "L3" のようなレイヤー指定\n}\n-- プロファイルは後段の「描画@comfont」効果で指定する。\nlocal id=settings.id\nlocal voice=require("PSDToolKit.VoiceStates"):get(id)\nlocal restart_time=voice\n    and math.max(0,obj.time-(tonumber(voice.time) or 0))\n    or 0\nlocal wait_tag=string.format("<w%.9f>",restart_time)\nlocal ok,compositefont=pcall(obj.module,"compositefont")\nlocal source=obj.getvalue("テキスト","テキスト")\nlocal capture=ok and compositefont and compositefont.api_version()>=14\n    and type(source)=="string"\nlocal function decorate(text)\n    if not ok or not compositefont or compositefont.api_version()<16 then return text end\n    local profile=obj.getvalue("描画@comfont","comfont::プロファイル");if profile==nil then return text end\n    local _,size,_,_,_,_,_,spacing=obj.getfont()\n    local success,result=pcall(compositefont.decorate_text,text,profile,size,spacing)\n    return success and type(result)=="string" and result or text\nend\nlocal function submit(text)\n    if capture then\n        pcall(compositefont.capture_text,text,tostring(obj.id),obj.frame,source)\n    end\nend\n-- セリフがないフレームも空の本文を渡し、前回の結果を残さない。\nsubmit("")\nrequire("PSDToolKit").mes({\n    id=id,\n    modifier=function(text)\n        -- 表示速度0専用。すでに経過した先頭waitタグは通常表示だけに残す。\n        submit(text)\n        return wait_tag..decorate(text)\n    end,\n},obj)?>
 文字毎に個別オブジェクト=0
 自動スクロール=0
 移動座標上に表示=0
@@ -21,4 +21,5 @@ I=0
 [Object.1]
 effect.name=描画@comfont
 comfont::プロファイル=default
-comfont::リガチャを強制解除=0
+comfont::リガチャを強制ON=0
+comfont::アンチエイリアス=0

@@ -1,6 +1,6 @@
 use compositefont_core::{
     CharacterClass, CompositeFontProfile, DEFAULT_PROFILE_NAME, FontAdjustment, MetricUnit,
-    ProfileDocument, UnicodeRange,
+    ProfileDocument, ProfileEntry, UnicodeRange,
 };
 
 pub const CATEGORY_ROWS: [CategoryRow; 7] = [
@@ -215,6 +215,25 @@ impl EditorModel {
             updated.disable_ligatures = patch
                 .disable_ligatures
                 .unwrap_or(adjustment.disable_ligatures);
+            updated.font_family_enabled = patch
+                .font_family_enabled
+                .unwrap_or(adjustment.font_family_enabled);
+            updated.size_enabled = patch.size_enabled.unwrap_or(adjustment.size_enabled);
+            updated.baseline_shift_enabled = patch
+                .baseline_shift_enabled
+                .unwrap_or(adjustment.baseline_shift_enabled);
+            updated.tracking_adjust_enabled = patch
+                .tracking_adjust_enabled
+                .unwrap_or(adjustment.tracking_adjust_enabled);
+            updated.vertical_scale_enabled = patch
+                .vertical_scale_enabled
+                .unwrap_or(adjustment.vertical_scale_enabled);
+            updated.horizontal_scale_enabled = patch
+                .horizontal_scale_enabled
+                .unwrap_or(adjustment.horizontal_scale_enabled);
+            updated.ligature_setting_enabled = patch
+                .ligature_setting_enabled
+                .unwrap_or(adjustment.ligature_setting_enabled);
             // Preserve fields byte-for-byte unless the user changed their item.
             if patch.font_family.is_none() {
                 updated.font_family = adjustment.font_family.clone();
@@ -268,9 +287,17 @@ impl EditorModel {
         let removed = targets.len();
         for (category, fallback) in targets.into_iter().rev() {
             if category >= CATEGORY_ROWS.len() {
-                self.selected_profile_mut()
-                    .custom_ranges
-                    .remove(category - CATEGORY_ROWS.len());
+                let index = category - CATEGORY_ROWS.len();
+                let profile = self.selected_profile_mut();
+                profile.custom_ranges.remove(index);
+                profile.entry_order.retain_mut(|entry| match entry {
+                    ProfileEntry::Range(value) if *value == index => false,
+                    ProfileEntry::Range(value) if *value > index => {
+                        *value -= 1;
+                        true
+                    }
+                    _ => true,
+                });
                 continue;
             }
             let class = CATEGORY_ROWS[category].class;
@@ -305,8 +332,7 @@ impl EditorModel {
                 next < targets.len()
                     && !rows.contains(&next)
                     && (Self::same_move_group(targets[row], targets[next])
-                        || (targets[row].0 < CATEGORY_ROWS.len()
-                            && targets[next].0 < CATEGORY_ROWS.len()
+                        || (targets[row].0 != targets[next].0
                             && !rows.iter().any(|&selected| {
                                 targets
                                     .get(selected)
@@ -316,18 +342,27 @@ impl EditorModel {
         })
     }
     fn same_move_group(a: (usize, Option<usize>), b: (usize, Option<usize>)) -> bool {
-        a.0 == b.0 || (a.0 >= CATEGORY_ROWS.len() && b.0 >= CATEGORY_ROWS.len())
+        a.0 == b.0 && a.0 < CATEGORY_ROWS.len()
+    }
+    fn entry_category(entry: ProfileEntry) -> usize {
+        match entry {
+            ProfileEntry::Class(class) => CATEGORY_ROWS
+                .iter()
+                .position(|row| row.class == class)
+                .unwrap(),
+            ProfileEntry::Range(index) => CATEGORY_ROWS.len() + index,
+        }
+    }
+    fn entry_visible(&self, entry: ProfileEntry) -> bool {
+        match entry {
+            ProfileEntry::Class(class) => self.selected_profile().class_enabled(class),
+            ProfileEntry::Range(_) => true,
+        }
     }
     fn swap_table_rows(&mut self, a: usize, b: usize) {
         let targets = self.table_targets();
         let (ac, af) = targets[a];
-        let (bc, bf) = targets[b];
-        if ac >= CATEGORY_ROWS.len() {
-            self.selected_profile_mut()
-                .custom_ranges
-                .swap(ac - CATEGORY_ROWS.len(), bc - CATEGORY_ROWS.len());
-            return;
-        }
+        let (_, bf) = targets[b];
         let class = CATEGORY_ROWS[ac].class;
         let first = self.adjustment_for_table_row(a).unwrap().clone();
         let second = self.adjustment_for_table_row(b).unwrap().clone();
@@ -365,19 +400,19 @@ impl EditorModel {
             }
         }
 
-        // Across class boundaries, move the whole class with its fallback candidates.
+        // Across entries, move each whole class (with its candidates) or custom range.
         // Never move a class a second time after changing its candidate order.
-        let selected_targets: Vec<_> = targets
+        let mut selected_targets: Vec<_> = targets
             .iter()
             .copied()
             .zip(flags)
             .filter_map(|(target, selected)| selected.then_some(target))
             .collect();
-        let mut order = self.selected_profile().ordered_classes();
+        let mut order = self.selected_profile().ordered_entries();
         let mut visible: Vec<_> = order
             .iter()
             .copied()
-            .filter(|&class| self.selected_profile().class_enabled(class))
+            .filter(|&entry| self.entry_visible(entry))
             .collect();
         let indices: Vec<usize> = match direction {
             RowMoveDirection::Up => (1..visible.len()).collect(),
@@ -388,14 +423,8 @@ impl EditorModel {
                 RowMoveDirection::Up => index - 1,
                 RowMoveDirection::Down => index + 1,
             };
-            let category = CATEGORY_ROWS
-                .iter()
-                .position(|row| row.class == visible[index])
-                .unwrap();
-            let neighbor = CATEGORY_ROWS
-                .iter()
-                .position(|row| row.class == visible[next])
-                .unwrap();
+            let category = Self::entry_category(visible[index]);
+            let neighbor = Self::entry_category(visible[next]);
             if selected_targets.iter().any(|target| target.0 == category)
                 && !selected_targets.iter().any(|target| target.0 == neighbor)
                 && !moved_classes.contains(&category)
@@ -406,16 +435,43 @@ impl EditorModel {
         let previous: Vec<_> = order
             .iter()
             .copied()
-            .filter(|&class| self.selected_profile().class_enabled(class))
+            .filter(|&entry| self.entry_visible(entry))
             .collect();
         if visible != previous {
             let mut visible = visible.into_iter();
-            for class in &mut order {
-                if self.selected_profile().class_enabled(*class) {
-                    *class = visible.next().unwrap();
+            for entry in &mut order {
+                if self.entry_visible(*entry) {
+                    *entry = visible.next().unwrap();
                 }
             }
-            self.selected_profile_mut().class_order = order;
+            // Store custom rules in visible order so overlap priority follows moves.
+            // Remap indexes rather than changing what the selected rows refer to.
+            let old_ranges = self.selected_profile().custom_ranges.clone();
+            let mut remap = vec![0; old_ranges.len()];
+            let mut ranges = Vec::with_capacity(old_ranges.len());
+            for entry in &mut order {
+                if let ProfileEntry::Range(index) = entry {
+                    let next = ranges.len();
+                    remap[*index] = next;
+                    ranges.push(old_ranges[*index].clone());
+                    *index = next;
+                }
+            }
+            for (category, _) in &mut selected_targets {
+                if *category >= CATEGORY_ROWS.len() {
+                    *category = CATEGORY_ROWS.len() + remap[*category - CATEGORY_ROWS.len()];
+                }
+            }
+            let profile = self.selected_profile_mut();
+            profile.custom_ranges = ranges;
+            profile.class_order = order
+                .iter()
+                .filter_map(|entry| match entry {
+                    ProfileEntry::Class(class) => Some(*class),
+                    ProfileEntry::Range(_) => None,
+                })
+                .collect();
+            profile.entry_order = order;
         }
         let selected: Vec<_> = self
             .table_targets()
@@ -467,24 +523,20 @@ impl EditorModel {
 
     fn table_targets(&self) -> Vec<(usize, Option<usize>)> {
         let mut targets = Vec::new();
-        for class in self.selected_profile().ordered_classes() {
-            let category = CATEGORY_ROWS
-                .iter()
-                .position(|row| row.class == class)
-                .unwrap();
-            if !self.selected_profile().class_enabled(class) {
-                continue;
+        for entry in self.selected_profile().ordered_entries() {
+            let category = Self::entry_category(entry);
+            match entry {
+                ProfileEntry::Class(class) if self.entry_visible(entry) => {
+                    targets.push((category, None));
+                    targets.extend(
+                        (0..self.selected_profile().fallbacks_for(class).len())
+                            .map(|index| (category, Some(index))),
+                    );
+                }
+                ProfileEntry::Range(_) => targets.push((category, None)),
+                _ => {}
             }
-            targets.push((category, None));
-            targets.extend(
-                (0..self.selected_profile().fallbacks_for(class).len())
-                    .map(|index| (category, Some(index))),
-            );
         }
-        targets.extend(
-            (0..self.selected_profile().custom_ranges.len())
-                .map(|index| (CATEGORY_ROWS.len() + index, None)),
-        );
         targets
     }
 
@@ -682,9 +734,16 @@ impl EditorModel {
 #[derive(Default)]
 pub struct AdjustmentPatch {
     pub font_family: Option<String>,
+    pub font_family_enabled: Option<bool>,
     pub metric_unit: Option<MetricUnit>,
     pub values: [Option<f64>; 5],
     pub disable_ligatures: Option<bool>,
+    pub size_enabled: Option<bool>,
+    pub baseline_shift_enabled: Option<bool>,
+    pub tracking_adjust_enabled: Option<bool>,
+    pub vertical_scale_enabled: Option<bool>,
+    pub horizontal_scale_enabled: Option<bool>,
+    pub ligature_setting_enabled: Option<bool>,
 }
 pub fn adjustment_values(adjustment: &FontAdjustment) -> [f64; 5] {
     match adjustment.metric_unit {
@@ -772,6 +831,7 @@ fn make_adjustment(
         vertical_scale_ratio: vertical_scale_percent / 100.0,
         horizontal_scale_ratio: horizontal_scale_percent / 100.0,
         disable_ligatures: false,
+        ..FontAdjustment::neutral()
     })
 }
 
@@ -865,6 +925,72 @@ mod tests {
             .unwrap();
         assert_eq!(model.document(), &before);
     }
+
+    #[test]
+    fn per_parameter_toggles_preserve_values_and_only_change_effective_overrides() {
+        let mut model = EditorModel::new(ProfileDocument::with_builtin_default());
+        model
+            .update_table_rows(
+                &[4],
+                "Meiryo UI".into(),
+                MetricUnit::Percent,
+                135.0,
+                4.0,
+                2.0,
+                90.0,
+                110.0,
+            )
+            .unwrap();
+        model
+            .patch_table_rows(
+                &[4],
+                &AdjustmentPatch {
+                    font_family_enabled: Some(false),
+                    size_enabled: Some(false),
+                    baseline_shift_enabled: Some(false),
+                    tracking_adjust_enabled: Some(false),
+                    vertical_scale_enabled: Some(false),
+                    horizontal_scale_enabled: Some(false),
+                    ligature_setting_enabled: Some(false),
+                    disable_ligatures: Some(true),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let disabled = model.adjustment_for_table_row(4).unwrap();
+        assert_eq!(disabled.font_family, "Meiryo UI");
+        assert_eq!(disabled.size_ratio, 1.35);
+        assert_eq!(disabled.baseline_shift_em, 0.04);
+        assert_eq!(disabled.tracking_adjust_em, 0.02);
+        assert_eq!(disabled.effective_font_family(), "");
+        assert_eq!(disabled.effective_metrics(None).unwrap().size_ratio, 1.0);
+        assert_eq!(disabled.effective_vertical_scale_ratio(), 1.0);
+        assert_eq!(disabled.effective_horizontal_scale_ratio(), 1.0);
+        assert!(!disabled.effective_disable_ligatures());
+
+        model
+            .patch_table_rows(
+                &[4],
+                &AdjustmentPatch {
+                    font_family_enabled: Some(true),
+                    size_enabled: Some(true),
+                    baseline_shift_enabled: Some(true),
+                    tracking_adjust_enabled: Some(true),
+                    vertical_scale_enabled: Some(true),
+                    horizontal_scale_enabled: Some(true),
+                    ligature_setting_enabled: Some(true),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let enabled = model.adjustment_for_table_row(4).unwrap();
+        assert_eq!(enabled.font_family, "Meiryo UI");
+        assert_eq!(enabled.size_ratio, 1.35);
+        assert_eq!(enabled.effective_font_family(), "Meiryo UI");
+        assert_eq!(enabled.effective_metrics(None).unwrap().size_ratio, 1.35);
+        assert!(enabled.effective_disable_ligatures());
+    }
+
     #[test]
     fn ligature_batch_changes_preserve_metrics_and_unrelated_edits() {
         let mut model = EditorModel::new(ProfileDocument::with_builtin_default());
@@ -1434,5 +1560,187 @@ mod tests {
         assert_eq!(model.table_row_range_text(row), "U+10000–U+10FFFF");
         assert_eq!(model.table_row_name(usize::MAX), "");
         assert_eq!(model.table_row_range_text(usize::MAX), "");
+    }
+
+    #[test]
+    fn mixes_ranges_and_classes_and_preserves_priority_across_save_load() {
+        let mut model = EditorModel::new(ProfileDocument::with_builtin_default());
+        model.selected_profile_mut().western.font_family = "Western".into();
+        model.add_range("Latin".into(), 0x41, 0x5a).unwrap();
+        model
+            .patch_table_rows(
+                &[7],
+                &AdjustmentPatch {
+                    font_family: Some("Custom".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let old = serde_json::to_string(model.document()).unwrap();
+        assert!(!old.contains("entry_order"));
+        model = EditorModel::new(serde_json::from_str(&old).unwrap());
+        assert_eq!(model.table_row_name(7), "Latin");
+        let mut selected = vec![7];
+        for expected in (0..7).rev() {
+            assert!(model.can_move_table_rows(&selected, RowMoveDirection::Up));
+            selected = model.move_table_rows(&selected, RowMoveDirection::Up);
+            assert_eq!(selected, vec![expected]);
+            assert_eq!(model.selected_adjustment().font_family, "Custom");
+        }
+        assert_eq!(model.table_row_name(0), "Latin");
+        assert_eq!(model.table_row_name(1), "漢字");
+        assert_eq!(model.move_table_rows(&[1], RowMoveDirection::Up), vec![0]);
+        assert_eq!(model.table_row_name(0), "漢字");
+        assert_eq!(model.table_row_name(1), "Latin");
+        assert_eq!(model.selected_profile().resolve('A').font_family, "Custom");
+        let json = serde_json::to_string(model.document()).unwrap();
+        let loaded = EditorModel::new(serde_json::from_str(&json).unwrap());
+        let labels = |model: &EditorModel| {
+            (0..model.table_row_count())
+                .map(|row| model.table_row_name(row).to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(labels(&loaded), labels(&model));
+        assert_eq!(loaded.selected_profile().resolve('A').font_family, "Custom");
+    }
+
+    #[test]
+    fn custom_range_crosses_whole_candidate_group_without_changing_fonts() {
+        let mut model = EditorModel::new(ProfileDocument::with_builtin_default());
+        model.selected_profile_mut().kanji.font_family = "Primary".into();
+        model.add_selected_adjustment();
+        model.selected_profile_mut().kanji_fallbacks[0].font_family = "Fallback".into();
+        model.add_range("Latin".into(), 0x41, 0x5a).unwrap();
+        let mut rows = vec![8];
+        for _ in 0..6 {
+            rows = model.move_table_rows(&rows, RowMoveDirection::Up);
+        }
+        assert_eq!(rows, vec![2]);
+        assert_eq!(model.move_table_rows(&rows, RowMoveDirection::Up), vec![0]);
+        assert_eq!(model.table_row_name(0), "Latin");
+        assert_eq!(model.table_row_name(1), "漢字");
+        assert_eq!(model.table_row_name(2), "漢字");
+        assert_eq!(model.selected_profile().kanji.font_family, "Primary");
+        assert_eq!(
+            model.selected_profile().kanji_fallbacks[0].font_family,
+            "Fallback"
+        );
+        assert_eq!(model.move_table_rows(&[2], RowMoveDirection::Up), vec![1]);
+        assert_eq!(model.selected_profile().kanji.font_family, "Fallback");
+        assert_eq!(model.move_table_rows(&[1], RowMoveDirection::Up), vec![0]);
+        assert_eq!(model.table_row_name(0), "漢字");
+        assert_eq!(model.table_row_name(2), "Latin");
+    }
+
+    #[test]
+    fn deletion_copy_and_restore_keep_mixed_range_references_valid() {
+        let mut model = EditorModel::new(ProfileDocument::with_builtin_default());
+        model.add_range("first".into(), 0x41, 0x5a).unwrap();
+        model.add_range("second".into(), 0x41, 0x5a).unwrap();
+        let mut selected = vec![8];
+        for _ in 0..8 {
+            selected = model.move_table_rows(&selected, RowMoveDirection::Up);
+        }
+        assert_eq!(selected, vec![0]);
+        assert_eq!(model.selected_profile().custom_ranges[0].name, "second");
+        assert_eq!(model.copy_table_rows(&selected), vec![9]);
+        assert_eq!(model.table_row_name(9), "second (コピー)");
+        model.remove_adjustments_for_table_rows(&[0, 1]);
+        assert!(
+            !model
+                .selected_profile()
+                .class_enabled(CharacterClass::Kanji)
+        );
+        assert_eq!(model.table_row_name(6), "first");
+        assert_eq!(model.table_row_name(7), "second (コピー)");
+        model.restore_category(0);
+        assert_eq!(model.table_row_name(0), "漢字");
+        assert_eq!(model.table_row_name(7), "first");
+        assert_eq!(model.table_row_name(8), "second (コピー)");
+        model.add_range("new".into(), 0x100, 0x101).unwrap();
+        let row = model.selected_table_row();
+        assert_eq!(model.table_row_name(row), "new");
+        assert_eq!(model.selected_range().unwrap().start, 0x100);
+        let saved = serde_json::to_string(model.document()).unwrap();
+        let loaded = EditorModel::new(serde_json::from_str(&saved).unwrap());
+        assert_eq!(loaded.table_row_name(row), "new");
+    }
+
+    #[test]
+    fn every_multi_selection_keeps_its_fonts_in_an_already_mixed_list() {
+        let mut base = EditorModel::new(ProfileDocument::with_builtin_default());
+        base.add_range("first".into(), 0x41, 0x5a).unwrap();
+        base.add_range("second".into(), 0x41, 0x5a).unwrap();
+        for row in 0..base.table_row_count() {
+            base.patch_table_rows(
+                &[row],
+                &AdjustmentPatch {
+                    font_family: Some(format!("font-{row}")),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        let mut rows = vec![8];
+        for _ in 0..5 {
+            rows = base.move_table_rows(&rows, RowMoveDirection::Up);
+        }
+        let mut rows = vec![8];
+        for _ in 0..2 {
+            rows = base.move_table_rows(&rows, RowMoveDirection::Up);
+        }
+        let count = base.table_row_count();
+        assert_eq!(base.table_row_name(3), "second");
+        assert_eq!(base.table_row_name(6), "first");
+        for bits in 0..(1usize << count) {
+            let selected: Vec<_> = (0..count).filter(|row| bits & (1 << row) != 0).collect();
+            let fonts: Vec<_> = selected
+                .iter()
+                .map(|&row| {
+                    base.adjustment_for_table_row(row)
+                        .unwrap()
+                        .font_family
+                        .clone()
+                })
+                .collect();
+            for direction in [RowMoveDirection::Up, RowMoveDirection::Down] {
+                let mut model = base.clone();
+                let enabled = model.can_move_table_rows(&selected, direction);
+                let moved = model.move_table_rows(&selected, direction);
+                assert_eq!(
+                    enabled,
+                    model.document() != base.document(),
+                    "selection={selected:?} direction={direction:?}"
+                );
+                let after: Vec<_> = moved
+                    .iter()
+                    .map(|&row| {
+                        model
+                            .adjustment_for_table_row(row)
+                            .unwrap()
+                            .font_family
+                            .clone()
+                    })
+                    .collect();
+                assert_eq!(
+                    fonts, after,
+                    "selection={selected:?} direction={direction:?}"
+                );
+                assert_eq!(model.table_row_count(), count);
+                let first = (0..count)
+                    .find_map(|row| {
+                        model
+                            .table_row_target(row)
+                            .and_then(|(category, _)| category.checked_sub(CATEGORY_ROWS.len()))
+                    })
+                    .unwrap();
+                assert_eq!(
+                    model.selected_profile().resolve('A').font_family,
+                    model.selected_profile().custom_ranges[first]
+                        .adjustment
+                        .font_family
+                );
+            }
+        }
     }
 }

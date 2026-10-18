@@ -1,4 +1,4 @@
-//! Preview and anm2 use the same shaping, font resolution and rasterization.
+//! The egui settings preview uses the same font resolution and layout helpers.
 use crate::{
     font_coverage::FontManagerGlyphCoverage,
     render::{RenderRequest, layout_options, prepare},
@@ -6,6 +6,8 @@ use crate::{
 };
 use aviutl2::generic::ReadSection;
 use compositefont_core::CompositeFontProfile;
+
+const MARGIN: i32 = 4;
 
 pub struct PreviewBitmap {
     pub width: u32,
@@ -58,7 +60,10 @@ pub fn render_preview(
     // Preview text is already logical text, not the SDK's escaped alias.
     let plan = prepare(&request, text, &mut coverage)?
         .ok_or("プレビューに未対応の書式または補正値です。")?;
-    let mut layout = layout_options(&request, Some(width.saturating_sub(32).max(1) as f32));
+    let mut layout = layout_options(
+        &request,
+        Some(width.saturating_sub(2 * MARGIN as u32).max(1) as f32),
+    );
     // Per-glyph analyses are needed only for the settings preview guides.
     layout.glyph_guides = bounds_guide;
     let shaped = rasterize(&mut HostFonts::new(section), &plan, &layout)?;
@@ -67,10 +72,18 @@ pub fn render_preview(
         height,
         bgra: [0x1b, 0x19, 0x18, 255].repeat((width * height) as usize),
     };
-    for y in 0..shaped.bitmap.height.min(height.saturating_sub(16) as i32) {
-        for x in 0..shaped.bitmap.width.min(width.saturating_sub(16) as i32) {
+    for y in 0..shaped
+        .bitmap
+        .height
+        .min(height.saturating_sub(MARGIN as u32) as i32)
+    {
+        for x in 0..shaped
+            .bitmap
+            .width
+            .min(width.saturating_sub(MARGIN as u32) as i32)
+        {
             let src = ((y * shaped.bitmap.width + x) * 4) as usize;
-            let dst = (((y + 16) as u32 * width + (x + 16) as u32) * 4) as usize;
+            let dst = (((y + MARGIN) as u32 * width + (x + MARGIN) as u32) * 4) as usize;
             let alpha = u32::from(shaped.bitmap.bgra[src + 3]);
             for c in 0..3 {
                 bitmap.bgra[dst + c] = ((u32::from(bitmap.bgra[dst + c]) * (255 - alpha)
@@ -94,8 +107,8 @@ pub fn render_preview(
             for x in guide.left.floor() as i32..guide.right.ceil() as i32 {
                 put(
                     &mut bitmap,
-                    x + 16,
-                    guide.baseline.round() as i32 + 16,
+                    x + MARGIN,
+                    guide.baseline.round() as i32 + MARGIN,
                     [0, 0, 255, 255],
                 );
             }
@@ -108,12 +121,12 @@ fn outline(bitmap: &mut PreviewBitmap, bounds: windows::Win32::Foundation::RECT,
         return;
     }
     for x in bounds.left..bounds.right {
-        put(bitmap, x + 16, bounds.top + 16, color);
-        put(bitmap, x + 16, bounds.bottom + 15, color);
+        put(bitmap, x + MARGIN, bounds.top + MARGIN, color);
+        put(bitmap, x + MARGIN, bounds.bottom + MARGIN - 1, color);
     }
     for y in bounds.top..bounds.bottom {
-        put(bitmap, bounds.left + 16, y + 16, color);
-        put(bitmap, bounds.right + 15, y + 16, color);
+        put(bitmap, bounds.left + MARGIN, y + MARGIN, color);
+        put(bitmap, bounds.right + MARGIN - 1, y + MARGIN, color);
     }
 }
 fn put(bitmap: &mut PreviewBitmap, x: i32, y: i32, color: [u8; 4]) {

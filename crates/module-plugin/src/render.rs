@@ -1,11 +1,9 @@
-//! Non-destructive anm2 rendering. Only the image buffer is replaced.
+//! Text parsing and layout helpers used by the editor preview.
 use crate::{
     control_text::{ControlTextDefaults, parse_control_text, parse_decorated_control_text},
-    font_coverage::{FontManagerGlyphCoverage, GlyphCoverage},
+    font_coverage::GlyphCoverage,
 };
-use aviutl2::generic::ReadSection;
 use compositefont_core::CompositeFontProfile;
-use std::sync::Arc;
 
 #[derive(Clone, PartialEq)]
 pub(crate) struct RenderRequest {
@@ -27,24 +25,6 @@ pub(crate) struct Bitmap {
     pub height: i32,
     pub bgra: Vec<u8>,
 }
-pub(crate) struct RenderedText {
-    pub bitmap: Arc<Bitmap>,
-}
-#[aviutl2::module::metatable]
-impl RenderedText {
-    #[direct]
-    fn index(&self, params: &mut aviutl2::module::ScriptModuleCallHandle) {
-        // Lua __index receives (userdata, key); the Rust receiver comes from
-        // the callback context and does not consume the Lua userdata argument.
-        match params.get_param_str(1).ok().as_deref() {
-            Some("data") => params.push_result_data(self.bitmap.bgra.as_ptr()),
-            Some("width") => params.push_result_int(self.bitmap.width),
-            Some("height") => params.push_result_int(self.bitmap.height),
-            _ => {}
-        }
-    }
-}
-
 pub(crate) fn decode_alias(text: &str) -> String {
     // obj.getvalue returns the alias representation. Decode once, preserving
     // escaped backslashes, rather than successively replacing sequences.
@@ -70,27 +50,6 @@ pub(crate) fn decode_alias(text: &str) -> String {
     result
 }
 
-pub(crate) fn render(
-    section: &ReadSection,
-    request: &RenderRequest,
-) -> Result<Option<Bitmap>, String> {
-    let text = if request.profile.is_some() {
-        decode_alias(&request.text)
-    } else {
-        request.text.clone()
-    };
-    let mut coverage = FontManagerGlyphCoverage::new(section);
-    let Some(plan) = prepare(request, &text, &mut coverage)? else {
-        return Ok(None);
-    };
-    if !plan.modified && !request.disable_ligatures {
-        return Ok(None);
-    }
-    let mut fonts = crate::shaping::HostFonts::new(section);
-    crate::shaping::rasterize(&mut fonts, &plan, &layout_options(request, None))
-        .map(|image| Some(image.bitmap))
-}
-
 pub(crate) fn layout_options(
     request: &RenderRequest,
     wrap_width: Option<f32>,
@@ -103,7 +62,27 @@ pub(crate) fn layout_options(
         wrap_width,
         glyph_guides: false,
         disable_ligatures: request.disable_ligatures,
+        force_ligatures: false,
+        antialias: crate::shaping::AntialiasMethod::Natural,
     }
+}
+
+/// Opt-in full-object DirectWrite rendering. Only the transient host image is
+/// replaced; the saved text and standard path remain untouched.
+pub(crate) fn render_ligature_opt_in(
+    section: &aviutl2::generic::ReadSection,
+    request: &RenderRequest,
+    antialias: crate::shaping::AntialiasMethod,
+) -> Result<Option<Bitmap>, String> {
+    let mut coverage = crate::font_coverage::FontManagerGlyphCoverage::new(section);
+    let Some(plan) = prepare(request, &request.text, &mut coverage)? else {
+        return Ok(None);
+    };
+    let mut options = layout_options(request, None);
+    options.force_ligatures = true;
+    options.antialias = antialias;
+    let mut fonts = crate::shaping::HostFonts::new(section);
+    crate::shaping::rasterize(&mut fonts, &plan, &options).map(|image| Some(image.bitmap))
 }
 
 /// Tags are removed before script analysis. UTF-16 ranges refer to the visible
@@ -115,7 +94,7 @@ pub(crate) fn prepare(
 ) -> Result<Option<crate::shaping::StyledText>, String> {
     use crate::shaping::{StyledText, TextStyle};
     use unicode_segmentation::UnicodeSegmentation;
-    if !(1.0..=512.0).contains(&request.size)
+    if !(1.0..=4096.0).contains(&request.size)
         || !request.spacing.is_finite()
         || !request.line_spacing.is_finite()
         || !(0..=8).contains(&request.align)
@@ -169,16 +148,23 @@ pub(crate) fn prepare(
             if !crate::is_safe_adjustment(&adjustment) {
                 return Ok(None);
             }
-            plan.modified |= !adjustment.font_family.is_empty() || adjustment.disable_ligatures;
             let size = span.format.effective_font_size().unwrap_or(base_size);
             let metrics = adjustment
                 .effective_metrics(Some(size))
                 .ok_or("Invalid text metrics")?;
-            let family = if adjustment.font_family.is_empty() || !span.format.profile_font_allowed()
+            plan.modified |= !adjustment.effective_font_family().is_empty()
+                || adjustment.effective_disable_ligatures()
+                || !crate::approximately_equal(metrics.size_ratio, 1.0)
+                || !crate::approximately_equal(metrics.baseline_shift_em, 0.0)
+                || !crate::approximately_equal(metrics.tracking_adjust_em, 0.0)
+                || !crate::approximately_equal(adjustment.effective_vertical_scale_ratio(), 1.0)
+                || !crate::approximately_equal(adjustment.effective_horizontal_scale_ratio(), 1.0);
+            let family = if adjustment.effective_font_family().is_empty()
+                || !span.format.profile_font_allowed()
             {
                 span.format.effective_font_family().unwrap_or(&request.font)
             } else {
-                &adjustment.font_family
+                adjustment.effective_font_family()
             };
             let flags = span
                 .format
@@ -201,10 +187,10 @@ pub(crate) fn prepare(
                     } else {
                         1.0
                     }) as f32,
-                horizontal: (adjustment.horizontal_scale_ratio
+                horizontal: (adjustment.effective_horizontal_scale_ratio()
                     * span.format.render_layout.horizontal) as f32,
-                vertical: (adjustment.vertical_scale_ratio * span.format.render_layout.vertical)
-                    as f32,
+                vertical: (adjustment.effective_vertical_scale_ratio()
+                    * span.format.render_layout.vertical) as f32,
                 tracking: (span
                     .format
                     .render_layout
@@ -216,7 +202,7 @@ pub(crate) fn prepare(
                 color,
                 bold: flags.map_or(request.bold, |s| s.bold),
                 italic: flags.map_or(request.italic, |s| s.italic),
-                disable_ligatures: adjustment.disable_ligatures
+                disable_ligatures: adjustment.effective_disable_ligatures()
                     || span.format.render_layout.disable_ligatures,
             };
             if !style.valid() {
@@ -268,6 +254,31 @@ mod tests {
     }
 
     #[test]
+    fn preview_respects_each_profile_parameter_toggle() {
+        let mut profile = CompositeFontProfile::neutral_default();
+        profile.western.size_ratio = 1.5;
+        profile.western.size_enabled = false;
+        let disabled_request = RenderRequest {
+            profile: Some(profile.clone()),
+            ..request("A")
+        };
+        let plan = prepare(&disabled_request, "A", &mut UnknownGlyphCoverage)
+            .unwrap()
+            .unwrap();
+        assert!(!plan.modified);
+
+        profile.western.size_enabled = true;
+        let enabled_request = RenderRequest {
+            profile: Some(profile),
+            ..request("A")
+        };
+        let plan = prepare(&enabled_request, "A", &mut UnknownGlyphCoverage)
+            .unwrap()
+            .unwrap();
+        assert!(plan.modified);
+    }
+
+    #[test]
     fn alias_decode_preserves_literal_backslashes() {
         assert_eq!(decode_alias(r"日本語\nA\\nB\tC"), "日本語\nA\\nB\tC");
     }
@@ -297,6 +308,33 @@ mod tests {
             );
             assert_eq!(plan.ranges.len(), 1, "{text}");
         }
+    }
+    #[test]
+    fn opt_in_layout_accepts_object_sizes_above_512() {
+        for size in [512.0, 513.0, 768.0, 1024.0, 2048.0] {
+            let input = RenderRequest {
+                size,
+                ..request("ffi")
+            };
+            let plan = prepare(&input, "ffi", &mut UnknownGlyphCoverage)
+                .unwrap()
+                .unwrap();
+            assert_eq!(plan.ranges.len(), 1, "size {size}");
+            assert_eq!(plan.ranges[0].style.size, size as f32);
+            assert!(plan.ranges[0].style.valid());
+        }
+        let mut profile = CompositeFontProfile::neutral_default();
+        profile.western.size_ratio = 1.2;
+        let input = RenderRequest {
+            size: 1024.0,
+            profile: Some(profile),
+            ..request("ffi")
+        };
+        let plan = prepare(&input, "ffi", &mut UnknownGlyphCoverage)
+            .unwrap()
+            .unwrap();
+        assert!(plan.ranges[0].style.size > 1024.0);
+        assert!(plan.ranges[0].style.valid());
     }
     #[test]
     fn equivalent_tagged_ranges_merge_and_use_visible_utf16_offsets() {
