@@ -1093,26 +1093,17 @@ impl EditorApp {
                         .variations(&self.font, &self.fonts, ui.ctx())
                     {
                         ui.add_space(6.0);
-                        let old_font = self.font.clone();
                         let selected = variations
                             .iter()
                             .find(|item| item.family.eq_ignore_ascii_case(self.font.trim()))
                             .map_or("バリエーション", |item| item.label.as_str());
-                        let response = egui::ComboBox::from_id_salt("font-variation")
-                            .width(142.0)
-                            .selected_text(selected)
-                            .show_ui(ui, |ui| {
-                                for variation in variations {
-                                    ui.selectable_value(
-                                        &mut self.font,
-                                        variation.family,
-                                        variation.label,
-                                    );
-                                }
-                            });
-                        self.changed_fields[0] |= self.font != old_font;
+                        let response = ui.add_sized([142.0, 32.0], egui::Button::new((
+                            selected.to_owned().atom_shrink(true), egui::Atom::grow(),
+                            egui::RichText::new("\u{e5c5}").family(egui::FontFamily::Name("MaterialIcons".into())),
+                        )).truncate());
+                        self.font_picker.weight_button(&response, variations);
                         self.explain(
-                            response.response,
+                            response,
                             "OpenTypeのウェイト違いを選びます。選択するとフォント名をAviUtl2で認識される名前へ切り替えます。",
                         );
                     }

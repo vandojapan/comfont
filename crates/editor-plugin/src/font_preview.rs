@@ -60,9 +60,15 @@ impl FontPreviewCatalog {
         ctx: &egui::Context,
     ) -> Option<Vec<FontVariation>> {
         self.ensure_scan_started(ctx);
-        let state = self.state.try_lock().ok()?;
-        let candidates = state.variations.as_ref()?.get(&normalize_name(family))?;
-        resolve_host_variations(candidates, host_fonts)
+        let state = self.state.try_lock().ok();
+        let candidates = state
+            .as_ref()
+            .and_then(|state| state.variations.as_ref()?.get(&normalize_name(family)));
+        let mut variations = resolve_host_named_variations(family, host_fonts).or_else(|| {
+            candidates.and_then(|candidates| resolve_host_variations(candidates, host_fonts))
+        })?;
+        sort_font_variations(&mut variations, candidates.map(Vec::as_slice));
+        Some(variations)
     }
 
     pub(super) fn preview(
@@ -683,6 +689,109 @@ fn resolve_host_variations(
     (variations.len() > 1).then_some(variations)
 }
 
+// Some fonts exposed by AviUtl2 (for example Adobe Fonts) have no file in the
+// directories scanned for picker previews. Their named faces are still usable
+// by the host, so derive the menu from the host's exact font names.
+fn resolve_host_named_variations(
+    family: &str,
+    host_fonts: &[String],
+) -> Option<Vec<FontVariation>> {
+    let selected = family.trim();
+    if !is_safe_font_name(selected) {
+        return None;
+    }
+    // A family name can itself be a usable face (e.g. "DIN 2014"). Prefer
+    // its children before treating the selected name's final word as a style.
+    named_variations_for_stem(selected, host_fonts).or_else(|| {
+        let (stem, _) = split_named_face(selected)?;
+        named_variations_for_stem(stem, host_fonts)
+    })
+}
+
+fn named_variations_for_stem(stem: &str, host_fonts: &[String]) -> Option<Vec<FontVariation>> {
+    let stem_key = normalize_name(stem);
+    let mut variations = host_fonts
+        .iter()
+        .filter(|name| is_safe_font_name(name))
+        .filter_map(|name| {
+            let (candidate_stem, label) = split_named_face(name)?;
+            (normalize_name(candidate_stem) == stem_key).then(|| FontVariation {
+                label: label.to_owned(),
+                family: name.clone(),
+            })
+        })
+        .collect::<Vec<_>>();
+    if let Some(base) = host_fonts
+        .iter()
+        .find(|name| normalize_name(name) == stem_key)
+    {
+        variations.push(FontVariation {
+            label: "標準".to_owned(),
+            family: base.clone(),
+        });
+    }
+    sort_font_variations(&mut variations, None);
+    variations
+        .dedup_by(|left, right| normalize_name(&left.family) == normalize_name(&right.family));
+    (variations.len() > 1).then_some(variations)
+}
+
+fn split_named_face(name: &str) -> Option<(&str, &str)> {
+    let (stem, suffix) = name.trim().rsplit_once(' ')?;
+    (!stem.trim().is_empty() && !suffix.is_empty()).then_some((stem.trim_end(), suffix))
+}
+
+fn sort_font_variations(variations: &mut [FontVariation], faces: Option<&[FaceVariation]>) {
+    variations.sort_by_cached_key(|variation| {
+        let family = normalize_name(&variation.family);
+        let weight = faces
+            .and_then(|faces| {
+                let mut weights = faces
+                    .iter()
+                    .filter(|face| {
+                        face.font_names
+                            .iter()
+                            .any(|name| normalize_name(name) == family)
+                    })
+                    .map(|face| face.weight);
+                let weight = weights.next()?;
+                weights.all(|other| other == weight).then_some(weight)
+            })
+            .or_else(|| weight_order(&variation.label))
+            .unwrap_or(u16::MAX);
+        (weight, family)
+    });
+}
+
+// These aliases affect ordering only. Every host-named variant remains in the
+// menu, including names whose weight cannot be inferred.
+fn weight_order(label: &str) -> Option<u16> {
+    let label = label.trim().to_ascii_lowercase().replace([' ', '-'], "");
+    if let Some(number) = label
+        .strip_prefix('w')
+        .and_then(|number| number.parse::<u16>().ok())
+    {
+        return number.checked_mul(100);
+    }
+    if let Ok(number) = label.parse::<u16>() {
+        return Some(number);
+    }
+    Some(match label.as_str() {
+        "thin" | "hairline" | "t" => 100,
+        "extralight" | "ultralight" | "el" | "ul" => 200,
+        "light" | "l" => 300,
+        "book" => 350,
+        "regular" | "normal" | "roman" | "r" | "標準" => 400,
+        "medium" | "m" => 500,
+        "semibold" | "demibold" | "demi" | "sb" | "db" => 600,
+        "bold" | "b" => 700,
+        "extrabold" | "ultrabold" | "eb" | "ub" => 800,
+        "heavy" | "hvy" | "black" | "blk" | "h" => 900,
+        "ultra" | "ultrablack" | "extrablack" | "u" => 1000,
+        _ => return None,
+    })
+}
+
 fn is_safe_font_name(name: &str) -> bool {
     !name.trim().is_empty()
         && !name
@@ -798,6 +907,107 @@ mod tests {
     fn abbreviation_labels_keep_b_and_h_style_names() {
         assert!(subfamily_label_rank("B") < subfamily_label_rank("Bold"));
         assert!(subfamily_label_rank("H") < subfamily_label_rank("Heavy"));
+    }
+
+    #[test]
+    fn host_named_weights_work_without_a_scanned_font_file() {
+        let host_fonts: Vec<String> = vec![
+            "A P-OTF UD新ゴ Pr6N W3".into(),
+            "A P-OTF UD新ゴ Pr6N B".into(),
+            "A P-OTF UD新ゴ Pr6N U".into(),
+            "A P-OTF UD新ゴ Pr6N Hvy".into(),
+            "A P-OTF UD新ゴ Pr6 B".into(),
+            "A P-OTF UD新丸ゴ Pr6N U".into(),
+            "Other Font B".into(),
+        ];
+        let expected = vec![
+            FontVariation {
+                label: "W3".into(),
+                family: "A P-OTF UD新ゴ Pr6N W3".into(),
+            },
+            FontVariation {
+                label: "B".into(),
+                family: "A P-OTF UD新ゴ Pr6N B".into(),
+            },
+            FontVariation {
+                label: "Hvy".into(),
+                family: "A P-OTF UD新ゴ Pr6N Hvy".into(),
+            },
+            FontVariation {
+                label: "U".into(),
+                family: "A P-OTF UD新ゴ Pr6N U".into(),
+            },
+        ];
+        for selected in &host_fonts[..4] {
+            assert_eq!(
+                resolve_host_named_variations(selected, &host_fonts),
+                Some(expected.clone())
+            );
+        }
+        assert!(
+            resolve_host_named_variations("A P-OTF UD新ゴ Pr6N B", &[host_fonts[1].clone()])
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn exact_family_name_takes_priority_over_its_parent_name() {
+        let host_fonts = vec!["DIN 2014".into(), "DIN 2014 Hvy".into(), "DIN Other".into()];
+        assert_eq!(
+            resolve_host_named_variations("DIN 2014", &host_fonts),
+            Some(vec![
+                FontVariation {
+                    label: "標準".into(),
+                    family: "DIN 2014".into()
+                },
+                FontVariation {
+                    label: "Hvy".into(),
+                    family: "DIN 2014 Hvy".into()
+                },
+            ])
+        );
+    }
+
+    #[test]
+    fn named_weights_sort_light_to_heavy_without_dropping_unknown_names() {
+        let labels = [
+            "U", "B", "Custom", "W10", "R", "Hvy", "W3", "EL", "DB", "L", "M",
+        ];
+        let fonts = labels
+            .iter()
+            .map(|label| format!("Example {label}"))
+            .collect::<Vec<_>>();
+        let variations = resolve_host_named_variations("Example U", &fonts).unwrap();
+        assert_eq!(
+            variations
+                .iter()
+                .map(|variation| variation.label.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "EL", "L", "W3", "R", "M", "DB", "B", "Hvy", "U", "W10", "Custom"
+            ]
+        );
+    }
+
+    #[test]
+    fn font_weight_metadata_takes_priority_over_name_heuristics() {
+        let mut variations = vec![
+            FontVariation {
+                label: "Custom".into(),
+                family: "Example Custom".into(),
+            },
+            FontVariation {
+                label: "L".into(),
+                family: "Example L".into(),
+            },
+        ];
+        let faces = vec![FaceVariation {
+            label: "Custom".into(),
+            weight: 100,
+            font_names: vec!["Example Custom".into()],
+        }];
+        sort_font_variations(&mut variations, Some(&faces));
+        assert_eq!(variations[0].label, "Custom");
     }
 
     #[test]
