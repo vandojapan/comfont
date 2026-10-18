@@ -146,6 +146,17 @@ mod tests {
             adjustment.remove("vertical_scale_ratio");
             adjustment.remove("horizontal_scale_ratio");
             adjustment.remove("disable_ligatures");
+            for enabled in [
+                "font_family_enabled",
+                "size_enabled",
+                "baseline_shift_enabled",
+                "tracking_adjust_enabled",
+                "vertical_scale_enabled",
+                "horizontal_scale_enabled",
+                "ligature_setting_enabled",
+            ] {
+                adjustment.remove(enabled);
+            }
         }
         std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
 
@@ -153,6 +164,13 @@ mod tests {
         assert_eq!(loaded.profiles[0].western.vertical_scale_ratio, 1.0);
         assert_eq!(loaded.profiles[0].western.horizontal_scale_ratio, 1.0);
         assert!(!loaded.profiles[0].western.disable_ligatures);
+        assert!(loaded.profiles[0].western.font_family_enabled);
+        assert!(loaded.profiles[0].western.size_enabled);
+        assert!(loaded.profiles[0].western.baseline_shift_enabled);
+        assert!(loaded.profiles[0].western.tracking_adjust_enabled);
+        assert!(loaded.profiles[0].western.vertical_scale_enabled);
+        assert!(loaded.profiles[0].western.horizontal_scale_enabled);
+        assert!(loaded.profiles[0].western.ligature_setting_enabled);
 
         std::fs::remove_file(path).unwrap();
     }

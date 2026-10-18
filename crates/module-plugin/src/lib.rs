@@ -1,5 +1,7 @@
 mod control_text;
 mod font_coverage;
+mod generated_text;
+mod native_filter;
 pub mod preview;
 mod render;
 mod shaping;
@@ -23,7 +25,36 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-const API_VERSION: i32 = 13;
+const API_VERSION: i32 = 16;
+
+pub use native_filter::NativeTextFilter;
+
+/// Unknown or malformed controls exclude the entire source from explicit
+/// decoration; do not partially decorate it.
+pub fn supports_text(text: &str) -> bool {
+    !text
+        .chars()
+        .any(|c| c.is_control() && !matches!(c, '\r' | '\n'))
+        && parse_control_text(text, ControlTextDefaults::default()).is_ok()
+}
+
+/// The edit API supplies alias escapes, rather than the displayed string.
+pub fn supports_alias_text(alias_text: &str) -> bool {
+    supports_text(&render::decode_alias(alias_text))
+}
+
+fn decorate_host_text(
+    text: String,
+    _force_disable_ligatures: bool,
+    decorate: impl FnOnce(String) -> String,
+) -> String {
+    if !supports_text(&text) {
+        return text;
+    }
+    // The host exposes no typography switch for standard text. Inserting
+    // ZWNJ is not equivalent and can render .notdef boxes in UD Shin Go.
+    host_text_controls(&decorate(text))
+}
 // AviUtl2 rasterizes text size at twice the value reported by obj.getfont(),
 // while gw and the resulting object bounds use pixel units.
 const TEXT_RASTER_SIZE_SCALE: f64 = 2.0;
@@ -65,6 +96,7 @@ fn integration_test_profile() -> CompositeFontProfile {
         custom_ranges: Vec::new(),
         disabled_classes: Vec::new(),
         class_order: Vec::new(),
+        entry_order: Vec::new(),
         name: INTEGRATION_TEST_PROFILE.to_owned(),
         western: western.clone(),
         western_fallbacks: Vec::new(),
@@ -97,6 +129,7 @@ fn clipping_test_profile() -> CompositeFontProfile {
         custom_ranges: Vec::new(),
         disabled_classes: Vec::new(),
         class_order: Vec::new(),
+        entry_order: Vec::new(),
         name: CLIPPING_TEST_PROFILE.to_owned(),
         western: ocrb.clone(),
         western_fallbacks: Vec::new(),
@@ -232,12 +265,12 @@ impl ReloadableProfiles {
         let metrics = adjustment
             .effective_metrics(base_font_size)
             .unwrap_or_default();
-        resolved.font_family = adjustment.font_family;
+        resolved.font_family = adjustment.effective_font_family().to_owned();
         resolved.size_ratio = metrics.size_ratio;
         resolved.baseline_shift_em = metrics.baseline_shift_em;
         resolved.tracking_adjust_em = metrics.tracking_adjust_em;
-        resolved.vertical_scale_ratio = adjustment.vertical_scale_ratio;
-        resolved.horizontal_scale_ratio = adjustment.horizontal_scale_ratio;
+        resolved.vertical_scale_ratio = adjustment.effective_vertical_scale_ratio();
+        resolved.horizontal_scale_ratio = adjustment.effective_horizontal_scale_ratio();
         if candidate_index > 0 {
             resolved.rule_id = format!("{}:fallback:{candidate_index}", resolved.rule_id);
         }
@@ -588,12 +621,8 @@ fn resolved_adjustment_for_cluster(
             .adjustment_for_character(character)
             .cloned()
             .unwrap_or_else(FontAdjustment::neutral);
-        if adjustment.font_family.is_empty() {
-            return FontAdjustment {
-                disable_ligatures: adjustment.disable_ligatures,
-                ..FontAdjustment::neutral()
-            };
-        }
+        adjustment.font_family.clear();
+        adjustment.font_family_enabled = false;
         adjustment.fallback_font_families.clear();
         adjustment
     }
@@ -826,7 +855,7 @@ fn glyph_top_extent(
         * font_size
         * TEXT_RASTER_SIZE_SCALE
         * size_ratio
-        * item.adjustment.vertical_scale_ratio;
+        * item.adjustment.effective_vertical_scale_ratio();
     let top_extent = scaled_top + font_size * metrics.baseline_shift_em;
     top_extent.is_finite().then_some(top_extent)
 }
@@ -839,10 +868,10 @@ fn layout_font_family<'a>(
         item.input_format
             .effective_font_family()
             .or(base_font_family)
-    } else if item.adjustment.font_family.is_empty() {
+    } else if item.adjustment.effective_font_family().is_empty() {
         base_font_family
     } else {
-        Some(&item.adjustment.font_family)
+        Some(item.adjustment.effective_font_family())
     }
 }
 
@@ -892,16 +921,11 @@ fn resolved_adjustment_for_cluster_with_index(
         Vec::new()
     };
     for (index, adjustment) in candidates.into_iter().enumerate() {
-        if adjustment.font_family.is_empty() {
-            if adjustment.disable_ligatures {
-                return (
-                    FontAdjustment {
-                        disable_ligatures: true,
-                        ..FontAdjustment::neutral()
-                    },
-                    index,
-                );
+        if adjustment.effective_font_family().is_empty() {
+            if adjustment.effective_disable_ligatures() {
+                return (adjustment, index);
             }
+            last = (adjustment, index);
             continue;
         }
         // A font must cover the whole grapheme, including dependent vowels
@@ -911,7 +935,7 @@ fn resolved_adjustment_for_cluster_with_index(
             .chars()
             .filter(|c| !c.is_control() && !ignorable.contains(*c))
         {
-            match coverage.has_glyph(&adjustment.font_family, c) {
+            match coverage.has_glyph(adjustment.effective_font_family(), c) {
                 Some(false) => {
                     result = Some(false);
                     break;
@@ -1039,28 +1063,35 @@ impl TextRunBackend for ControlTagBackend {
 fn is_safe_adjustment(adjustment: &FontAdjustment) -> bool {
     let metric_values_are_safe = match adjustment.metric_unit {
         compositefont_core::MetricUnit::Percent => {
-            adjustment.size_ratio.is_finite()
-                && adjustment.size_ratio > 0.0
-                && adjustment.baseline_shift_em.is_finite()
-                && adjustment.tracking_adjust_em.is_finite()
+            (!adjustment.size_enabled
+                || (adjustment.size_ratio.is_finite() && adjustment.size_ratio > 0.0))
+                && (!adjustment.baseline_shift_enabled || adjustment.baseline_shift_em.is_finite())
+                && (!adjustment.tracking_adjust_enabled
+                    || adjustment.tracking_adjust_em.is_finite())
         }
         compositefont_core::MetricUnit::Pixels => {
-            adjustment
-                .size_px
-                .is_some_and(|value| value.is_finite() && value > 0.0)
-                && adjustment.baseline_shift_px.is_some_and(f64::is_finite)
-                && adjustment.tracking_adjust_px.is_some_and(f64::is_finite)
+            (!adjustment.size_enabled
+                || adjustment
+                    .size_px
+                    .is_some_and(|value| value.is_finite() && value > 0.0))
+                && (!adjustment.baseline_shift_enabled
+                    || adjustment.baseline_shift_px.is_some_and(f64::is_finite))
+                && (!adjustment.tracking_adjust_enabled
+                    || adjustment.tracking_adjust_px.is_some_and(f64::is_finite))
         }
     };
-    !adjustment
-        .font_family
-        .chars()
-        .any(|character| matches!(character, '<' | '>' | ',') || character.is_control())
+    (!adjustment.font_family_enabled
+        || !adjustment
+            .font_family
+            .chars()
+            .any(|character| matches!(character, '<' | '>' | ',') || character.is_control()))
         && metric_values_are_safe
-        && adjustment.vertical_scale_ratio.is_finite()
-        && adjustment.vertical_scale_ratio > 0.0
-        && adjustment.horizontal_scale_ratio.is_finite()
-        && adjustment.horizontal_scale_ratio > 0.0
+        && (!adjustment.vertical_scale_enabled
+            || (adjustment.vertical_scale_ratio.is_finite()
+                && adjustment.vertical_scale_ratio > 0.0))
+        && (!adjustment.horizontal_scale_enabled
+            || (adjustment.horizontal_scale_ratio.is_finite()
+                && adjustment.horizontal_scale_ratio > 0.0))
 }
 
 fn control_tag_fragment_values_are_safe(
@@ -1080,8 +1111,8 @@ fn control_tag_fragment_values_are_safe(
         1.0
     };
     let size_ratio = profile_size_ratio * size_factor;
-    let horizontal_scale_ratio = adjustment.horizontal_scale_ratio / size_factor;
-    let vertical_scale_ratio = adjustment.vertical_scale_ratio / size_factor;
+    let horizontal_scale_ratio = adjustment.effective_horizontal_scale_ratio() / size_factor;
+    let vertical_scale_ratio = adjustment.effective_vertical_scale_ratio() / size_factor;
     let tracking_px = layout_override
         .and_then(|item| item.tracking_px)
         .or_else(|| {
@@ -1118,10 +1149,11 @@ fn write_control_tag_run(
         output.push_str(&source[run.range.utf8.clone()]);
         return;
     };
-    let has_font = run.input_format.profile_font_allowed() && !adjustment.font_family.is_empty();
+    let family = adjustment.effective_font_family();
+    let has_font = run.input_format.profile_font_allowed() && !family.is_empty();
     if has_font {
         output.push_str("<@");
-        output.push_str(&adjustment.font_family);
+        output.push_str(family);
         output.push('>');
         write_at_format_restoration(output, &run.input_format);
         if has_s_optional_format(&run.input_format) {
@@ -1199,8 +1231,8 @@ fn write_control_tag_fragment(
         1.0
     };
     let size_ratio = profile_size_ratio * size_factor;
-    let horizontal_scale_ratio = adjustment.horizontal_scale_ratio / size_factor;
-    let vertical_scale_ratio = adjustment.vertical_scale_ratio / size_factor;
+    let horizontal_scale_ratio = adjustment.effective_horizontal_scale_ratio() / size_factor;
+    let vertical_scale_ratio = adjustment.effective_vertical_scale_ratio() / size_factor;
     let has_size = !approximately_equal(size_ratio, 1.0);
     let tracking_px = layout_override
         .and_then(|item| item.tracking_px)
@@ -1242,12 +1274,12 @@ fn write_control_tag_fragment(
         write_relative_position_tag(output, -baseline_shift);
     }
 
-    if adjustment.disable_ligatures {
+    if adjustment.effective_disable_ligatures() {
         // Internal render tag: never written back into the host source.
         output.push_str("<cf_liga0>");
     }
     output.push_str(&source[range]);
-    if adjustment.disable_ligatures {
+    if adjustment.effective_disable_ligatures() {
         output.push_str("<cf_liga>");
     }
 
@@ -1389,6 +1421,30 @@ fn format_control_number(value: f64) -> String {
     formatted
 }
 
+fn host_text_controls(decorated: &str) -> String {
+    const DISABLE: &str = "<cf_liga0>";
+    const ENABLE: &str = "<cf_liga>";
+    let mut output = String::with_capacity(decorated.len());
+    let mut rest = decorated;
+    while !rest.is_empty() {
+        if let Some(after) = rest.strip_prefix(DISABLE) {
+            rest = after;
+            continue;
+        }
+        if let Some(after) = rest.strip_prefix(ENABLE) {
+            rest = after;
+            continue;
+        }
+        let next_disable = rest.find(DISABLE).unwrap_or(rest.len());
+        let next_enable = rest.find(ENABLE).unwrap_or(rest.len());
+        let length = next_disable.min(next_enable);
+        let (segment, after) = rest.split_at(length);
+        output.push_str(segment);
+        rest = after;
+    }
+    output
+}
+
 fn modified_time(path: &Path) -> Option<SystemTime> {
     std::fs::metadata(path)
         .and_then(|metadata| metadata.modified())
@@ -1429,19 +1485,14 @@ impl IntoScriptModuleReturnValue for ScriptResolvedFont {
 #[aviutl2::plugin(ScriptModule)]
 pub struct CompositeFontModule {
     profiles: Mutex<ReloadableProfiles>,
-    render_cache: Mutex<
-        std::collections::VecDeque<(
-            render::RenderRequest,
-            Option<std::sync::Arc<render::Bitmap>>,
-        )>,
-    >,
+    generated_text: Mutex<generated_text::GeneratedTextCache>,
 }
 
 impl ScriptModule for CompositeFontModule {
     fn new(_info: aviutl2::AviUtl2Info) -> aviutl2::AnyResult<Self> {
         Ok(Self {
             profiles: Mutex::new(ReloadableProfiles::new(profile_path())),
-            render_cache: Mutex::new(std::collections::VecDeque::new()),
+            generated_text: Mutex::new(generated_text::GeneratedTextCache::default()),
         })
     }
 
@@ -1456,44 +1507,54 @@ impl ScriptModule for CompositeFontModule {
     }
 }
 
-impl CompositeFontModule {
-    fn render_cached(
-        &self,
-        section: &aviutl2::generic::ReadSection,
-        request: render::RenderRequest,
-    ) -> Option<aviutl2::module::ScriptModuleUserData<render::RenderedText>> {
-        let mut cache = self.render_cache.lock().ok()?;
-        if let Some(index) = cache.iter().position(|(key, _)| key == &request) {
-            let entry = cache.remove(index)?;
-            let bitmap = entry.1.clone();
-            cache.push_back(entry);
-            return bitmap.map(|bitmap| render::RenderedText { bitmap }.into());
-        }
-        let bitmap = match render::render(section, &request) {
-            Ok(bitmap) => bitmap.map(std::sync::Arc::new),
-            Err(error) => {
-                let _ =
-                    aviutl2::logger::write_error_log(&format!("comfont anm2 renderer: {error}"));
-                None
-            }
-        };
-        cache.push_back((request, bitmap.clone()));
-        while cache.len() > 16
-            || cache
-                .iter()
-                .filter_map(|(_, b)| b.as_ref())
-                .map(|b| b.bgra.len())
-                .sum::<usize>()
-                > 64 * 1024 * 1024
-        {
-            cache.pop_front();
-        }
-        bitmap.map(|bitmap| render::RenderedText { bitmap }.into())
-    }
-}
-
 #[aviutl2::module::functions]
 impl CompositeFontModule {
+    fn forget_text(&self, object_id: String, frame: f64) -> bool {
+        let Ok(mut cache) = self.generated_text.lock() else {
+            return false;
+        };
+        cache.forget(&object_id, frame);
+        true
+    }
+
+    fn capture_text(
+        &self,
+        text: String,
+        object_id: String,
+        frame: f64,
+        source: String,
+        producer_source: Option<String>,
+        producer_effect: Option<String>,
+    ) -> bool {
+        let producer = producer_source.map(|script| {
+            (
+                producer_effect.unwrap_or_else(|| "スクリプト制御".to_owned()),
+                script,
+            )
+        });
+        self.generated_text
+            .lock()
+            .is_ok_and(|mut cache| cache.capture_from(text, object_id, frame, source, producer))
+    }
+
+    fn generated_text(
+        &self,
+        object_id: String,
+        frame: f64,
+        source: String,
+    ) -> (Option<String>, Option<String>, Option<String>) {
+        let Ok(mut cache) = self.generated_text.lock() else {
+            return (None, None, None);
+        };
+        let text = cache.get(&object_id, frame, &source);
+        let (effect, script) = cache
+            .producer(&object_id, frame, &source)
+            .map_or((None, None), |(effect, script)| {
+                (Some(effect), Some(script))
+            });
+        (text, effect, script)
+    }
+
     fn profile_names(&self) -> Vec<String> {
         let Ok(mut profiles) = self.profiles.lock() else {
             return Vec::new();
@@ -1527,78 +1588,8 @@ impl CompositeFontModule {
         Some(result)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn render_text(
-        &self,
-        text: String,
-        profile: String,
-        font: String,
-        size: f64,
-        spacing: f64,
-        line_spacing: f64,
-        color: String,
-        align: i32,
-        bold: bool,
-        italic: bool,
-        section: &aviutl2::generic::ReadSection,
-    ) -> Option<aviutl2::module::ScriptModuleUserData<render::RenderedText>> {
-        let profile = {
-            let mut profiles = self.profiles.lock().ok()?;
-            profiles.refresh_if_changed();
-            profiles.store.profile(Some(&profile)).ok()?.clone()
-        };
-        let request = render::RenderRequest {
-            text,
-            profile: Some(profile),
-            font,
-            size,
-            spacing,
-            line_spacing,
-            color,
-            align,
-            bold,
-            italic,
-            disable_ligatures: false,
-        };
-        self.render_cached(section, request)
-    }
-
     fn decode_text(&self, alias_text: String) -> String {
         render::decode_alias(&alias_text)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn render_decorated(
-        &self,
-        text: String,
-        font: String,
-        size: f64,
-        spacing: f64,
-        line_spacing: f64,
-        color: String,
-        align: i32,
-        bold: bool,
-        italic: bool,
-        disable_ligatures: Option<bool>,
-        section: &aviutl2::generic::ReadSection,
-    ) -> Option<aviutl2::module::ScriptModuleUserData<render::RenderedText>> {
-        // No profile is accepted here: only decorate's generated text is rendered.
-        self.render_cached(
-            section,
-            render::RenderRequest {
-                text,
-                profile: None,
-                font,
-                size,
-                spacing,
-                line_spacing,
-                color,
-                align,
-                bold,
-                italic,
-                disable_ligatures: disable_ligatures.unwrap_or(false),
-            },
-        )
     }
 
     fn api_version() -> i32 {
@@ -1662,6 +1653,22 @@ impl CompositeFontModule {
         )
     }
 
+    fn decorate_text(
+        &self,
+        text: String,
+        profile: Option<String>,
+        base_font_size: Option<f64>,
+        base_char_spacing: Option<f64>,
+        force_disable_ligatures: Option<bool>,
+        section: &aviutl2::generic::ReadSection,
+    ) -> String {
+        // Even the global ligature override must leave unsupported input
+        // byte-for-byte intact (including Lua and unknown/private tags).
+        decorate_host_text(text, force_disable_ligatures.unwrap_or(false), |text| {
+            self.decorate(text, profile, base_font_size, base_char_spacing, section)
+        })
+    }
+
     fn decorate_layout(
         &self,
         text: String,
@@ -1692,6 +1699,71 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn text_preflight_uses_the_decorator_allowlist_for_the_whole_source() {
+        for text in [
+            "漢字 ଳ ABC\n次の行",
+            "<#ff0000>赤<#><s120,Arial,B>ABC<s>",
+            "<@游明朝><@+I>漢字<@-I><@>",
+        ] {
+            assert!(supports_text(text), "{text}");
+        }
+        for text in [
+            "<#red>ABC<future-control>国<#>",
+            "<?obj.mes('x')?>",
+            "<?=obj.frame?>",
+            "</>漢字<!>かんじ</>",
+            "<w1>待機",
+            "<r10>速度",
+            "<cf_liga0>ffi<cf_liga>",
+            "<sNaN>ABC<s>",
+            "<s0>ABC<s>",
+            "閉じていない<",
+            "A\tB",
+            "A\0B",
+        ] {
+            assert!(!supports_text(text), "{text}");
+        }
+    }
+
+    #[test]
+    fn alias_preflight_decodes_escapes_once() {
+        assert!(supports_alias_text(r"漢字\n<#red>ABC<#>"));
+        assert!(!supports_alias_text(r"漢字\tABC"));
+        assert!(supports_alias_text(r"漢字\\tABC"));
+        assert!(!supports_alias_text(r"漢字\n<future-control>ABC"));
+    }
+
+    #[test]
+    fn forced_ligature_override_never_changes_excluded_text() {
+        for text in [
+            "<#red>ABC<future-control>国<#>",
+            "<?obj.mes('ABC')?>",
+            "<cf_liga0>ffi<cf_liga>",
+            "</>漢字<!>かんじ</>",
+            "A\tB",
+        ] {
+            let output = decorate_host_text(text.into(), true, |_| {
+                panic!("unsupported text must not enter the decorator");
+            });
+            assert_eq!(output, text);
+        }
+        assert_eq!(decorate_host_text("ffi".into(), true, |text| text), "ffi");
+    }
+
+    #[test]
+    fn native_text_output_removes_private_markers_without_inserting_characters() {
+        assert_eq!(host_text_controls("A ffi B"), "A ffi B");
+        assert_eq!(host_text_controls("<cf_liga0>ffi<cf_liga>"), "ffi");
+        assert_eq!(host_text_controls("A <#ff0000>BC"), "A <#ff0000>BC");
+        for text in ["UD新ゴ 漢字かなABC", "ଳି", "କ୍ଷ", "क्ष", "لا", "e\u{301}", "👩‍💻"]
+        {
+            for force in [false, true] {
+                assert_eq!(decorate_host_text(text.into(), force, |s| s), text);
+            }
+        }
+    }
 
     #[derive(Default)]
     struct TestCoverage {
@@ -1761,6 +1833,7 @@ mod tests {
             custom_ranges: Vec::new(),
             disabled_classes: Vec::new(),
             class_order: Vec::new(),
+            entry_order: Vec::new(),
             name: "subtitle".to_owned(),
             western: latin.clone(),
             western_fallbacks: Vec::new(),
@@ -2398,13 +2471,13 @@ mod tests {
     }
 
     #[test]
-    fn input_font_does_not_enable_adjustments_from_a_disabled_profile_row() {
+    fn empty_profile_font_keeps_independent_metric_adjustments() {
         let mut profile = CompositeFontProfile::neutral_default();
         profile.western = adjustment("", 1.5, 0.25, 12.0, 0.8, 1.2);
 
         assert_eq!(
             decorate_plain_text("<@User Font>A<@>", &profile, Some(100.0), Some(3.0)),
-            "<@User Font>A<@>"
+            "<@User Font><s*1.5><gw1203><tw1.2><th0.8><p+0,-25>A<p><th><tw><gw><s><@>"
         );
     }
 

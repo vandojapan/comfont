@@ -1,42 +1,44 @@
 # Lua API
 
-`local cf = obj.module("compositefont")`で取得します。APIバージョンは13です。任意引数の`profile`を省略すると`default`を使用します。
+`local cf = obj.module("compositefont")` で取得します。APIバージョンは16。省略したプロファイルは `default` です。
 
-## 装飾文字列
+## 標準テキスト向けの装飾
 
-- `decorate(text, profile?, base_font_size?, base_char_spacing?)`: 可視文字へフォント・補正を適用し、AviUtl2制御文字列を返します。anm2の現行経路で使います。
-- `decorate_layout(text, profile?, base_font_size?, base_char_spacing?, base_font_family?)`: 等幅の先頭フォントについて上端見切れを補正する互換API。第2戻り値は常に0です。
+`decorate_text(text, profile?, base_font_size?, base_char_spacing?, force_disable_ligatures?)` は標準テキスト制御文字列を返します。内部専用のリガチャマーカーは取り除き、ZWNJ等を挿入しません。第5引数は互換性のため受理しますが、現行の標準出力には適用しません。プロファイルのリガチャ指定も同様です。
+
+非対応・不正なタグ、既存Lua、タブ等を含む入力は全体をそのまま返します。保存本文を編集するAPIではありません。
+
+既存の本文内Luaで手動連携する場合、出力直前へ次の4行を追加します。`text` は表示する文字列の変数名に置き換え、既存の `obj.mes(text)` は残します。
 
 ```lua
 local cf = obj.module("compositefont")
-local font, size, _, _, _, _, _, spacing = obj.getfont()
-local text = cf.decorate_layout("漢字 ABC123", "subtitle", size, spacing, font)
-obj.mes(text)
+local profile = obj.getvalue("描画@comfont", "comfont::プロファイル")
+local _, size, _, _, _, _, _, spacing = obj.getfont()
+if profile ~= nil then text = cf.decorate_text(text, profile, size, spacing) end
 ```
 
-`obj.mes`の例は標準テキスト内のLua制御スクリプト用です。範囲別リガチャ解除を含むプロファイルは描画専用タグ`<cf_liga0> / <cf_liga>`を生成するため、`render_decorated`を使います。Luaが生成した文字列も明示的に渡せば装飾できます。
+同じコードを `Plugin/comfont-snippets/decorate-text.lua` に同梱します。効果が未配置・無効なら装飾しません。後段のスクリプト制御へ貼るだけでは、描画済みの標準本文に反映できません。通常本文へは自動挿入しません。
 
-decorateは原文の書記素単位で設定を解決し、結合文字の途中へタグを挿入しません。範囲・分類は書記素の先頭文字、候補フォントの字形確認は正規化後の書記素全体を使います。描画APIは一時文字列をNFC正規化してDirectWriteで組み、保存本文を変更しません。
+`decorate(text, profile?, base_font_size?, base_char_spacing?)` は内部マーカー `<cf_liga0>` / `<cf_liga>` を含む文字列を返すため、標準描画へ渡す際は `decorate_text` を使います。
 
-対応する原文の基本書式は`<#>`系の色、`<s>`系のサイズ・フォント・BIS・縁幅、`<@>`系のフォント・装飾と`<@+BIS> / <@-BIS>`です。Bは太字、Iは斜体、Sは取り消し線。原文の指定が属性ごとにプロファイルより優先され、リセット後は適用を再開します。
+## 生成本文の一時連携
 
-色は6桁RGBと標準名white / red / yellow / green / aqua / blue / magenta / blackに対応します。未知・不正・未対応タグ、存在しないプロファイル、不正な補正値、制御文字と衝突するフォント名では原文を返します。描画APIの対応範囲はさらに[anm2仕様](anm2-spec.md)の制限を受けます。
+`capture_text(text, object_id, frame, source, producer_source?, producer_effect?)` は生成本文をaux2へ一時登録します。`generated_text(object_id, frame, source)` は照合した本文・生成元効果名・生成元コードを返します。`forget_text(object_id, frame)` は登録を破棄します。収集用であり描画APIではありません。
 
-## 解決・描画・互換関数
+`source` にはテキスト項目のalias値をそのまま渡し、`text` には表示する本文全体を渡します。空本文も空文字としてフレームごとに登録します。他スクリプトのローカル変数や共有globalは参照しません。
+
+登録値はプロジェクトに保存されず、最大64件・合計4 MiB。本文・原文・生成元コードは各64 KiB、ID・生成元名は各128バイトまでで、古い登録から破棄します。
+
+## その他
 
 | 関数 | 内容 |
 |---|---|
-| `resolve(character, profile?, base_font_size?)` | 1 Unicodeスカラー値の設定を取得 |
-| `resolve_codepoint(codepoint, profile?, base_font_size?)` | コードポイントで同じ設定を取得 |
+| `resolve(character, profile?, base_font_size?)` | 1文字の解決結果 |
+| `resolve_codepoint(codepoint, profile?, base_font_size?)` | コードポイントで解決 |
 | `profile_names()` | プロファイル名一覧 |
-| `decode_text(alias_text)` | SDKのalias表現を改行・バックスラッシュへ一度だけ復号 |
-| `render_decorated(text, font, size, spacing, line_spacing, color, align, bold, italic, disable_ligatures?)` | 生成済み制御文字列を画像化。プロファイルを再適用しない |
-| `render_text(text, profile, font, size, spacing, line_spacing, color, align, bold, italic)` | 旧anm2用の画像化 |
-| `profile_name(selection, saved_label?)` | 旧選択IDと保存ラベルから名前を取得。不一致はnil |
-| `api_version()` | 13 |
+| `decode_text(alias_text)` | alias文字列を一度だけ復号 |
+| `decorate_layout(text, profile?, base_font_size?, base_char_spacing?, base_font_family?)` | 等幅先頭フォントの上端補正を行う互換API。第2戻り値は0 |
+| `profile_name(selection, saved_label?)` | 旧選択IDから名前を解決 |
+| `api_version()` | `16` |
 
-resolveの戻り値はフォント名、サイズ倍率、ベースライン、字送り、垂直倍率、水平倍率、文字種名、ルールIDの8個です。ベースライン・字送りは基準サイズ1に対する比率です。px指定の行を解決するには基準サイズが必要です。空文字・複数文字・存在しない名前はエラーです。
-
-`render_decorated`の末尾の`disable_ligatures`は省略時falseです。trueで描画専用文字列に非結合文字を挿入し、必須結合も抑止します。原文は変更しませんが、接続形・結合記号・カーニング・字間も変わります。旧API 12の呼び出しは従来どおり動作します。プロファイルの範囲別`disable_ligatures`も描画へ引き継ぎます。末尾trueは全範囲を強制解除し、falseまたは省略時は範囲別設定に従います。
-
-描画関数は失敗時nil、成功時`data / width / height`を持つ所有権付きuserdataを返します。`obj.putpixeldata`への同期アップロードが完了するまでuserdataを保持してください。
+`resolve` 系はフォント名、サイズ倍率、ベースライン、字送り、垂直倍率、水平倍率、分類、ルールIDを返します。px指定の解決には基準サイズが必要です。

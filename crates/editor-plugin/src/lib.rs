@@ -12,13 +12,37 @@ use std::{
 
 use aviutl2::generic::{GenericPlugin, SubPlugin};
 use compositefont_core::ProfileDocument;
-use compositefont_module::CompositeFontModule;
+use compositefont_module::{CompositeFontModule, NativeTextFilter};
+use windows::{
+    Win32::Foundation::HWND,
+    Win32::UI::WindowsAndMessaging::{IsWindow, PostQuitMessage},
+};
+
+fn host_window_exists(raw_hwnd: isize) -> bool {
+    // SAFETY: IsWindow only inspects the borrowed window handle.
+    unsafe { IsWindow(Some(HWND(raw_hwnd as *mut std::ffi::c_void))) }.as_bool()
+}
+
+struct RestoreHostQuit(isize);
+
+impl Drop for RestoreHostQuit {
+    fn drop(&mut self) {
+        if !host_window_exists(self.0) {
+            // The nested winit loop may have consumed the host's WM_QUIT while
+            // dispatching thread-wide messages. Requeue it only after that loop
+            // has returned so AviUtl2's outer message loop can terminate.
+            // SAFETY: this callback and its nested eframe loop run on the host UI thread.
+            unsafe { PostQuitMessage(0) };
+        }
+    }
+}
 
 /// 合成フォントプロファイルを編集する汎用プラグイン。
 #[aviutl2::plugin(GenericPlugin)]
 struct CompositeFontEditorPlugin {
     editor_runtime: Arc<Mutex<EditorRuntime>>,
     script_module: SubPlugin<CompositeFontModule>,
+    native_text_filter: SubPlugin<NativeTextFilter>,
 }
 
 struct EditorRuntime {
@@ -55,6 +79,7 @@ impl GenericPlugin for CompositeFontEditorPlugin {
             ProfileDocument::with_builtin_default()
         });
         let script_module = SubPlugin::new_script_module(&info)?;
+        let native_text_filter = SubPlugin::new_filter_plugin(&info)?;
         let editor_runtime = Arc::new(Mutex::new(EditorRuntime {
             document,
             profile_path,
@@ -65,6 +90,7 @@ impl GenericPlugin for CompositeFontEditorPlugin {
         Ok(Self {
             editor_runtime,
             script_module,
+            native_text_filter,
         })
     }
 
@@ -86,17 +112,18 @@ impl GenericPlugin for CompositeFontEditorPlugin {
             let _ = aviutl2::logger::write_error_log("合成フォント画面の共有状態を更新できません");
         }
         {
-            let (name, restore) = ("合成フォント\\元の本文に戻す", true);
+            let name = "合成フォント\\元の本文に戻す";
             let handle = Arc::clone(&edit_handle);
             registry.register_object_item_menu(name, move |object, effect, index, item| {
                 if let Err(error) =
-                    text_integration::update_text(&handle, object, effect, index, item, restore)
+                    text_integration::restore_text(&handle, object, effect, index, item)
                 {
                     let _ = aviutl2::logger::write_error_log(&error);
                 }
             });
         }
         registry.register_script_module(Some("compositefont"), &self.script_module);
+        registry.register_filter_plugin(&self.native_text_filter);
         registry.register_menus::<Self>();
     }
 
@@ -156,8 +183,10 @@ fn show_editor_menu(owner: aviutl2::Win32WindowHandle) -> aviutl2::AnyResult<()>
             Arc::clone(&runtime.font_registration),
         )
     };
+    let host_window = edit_handle.get_host_app_window_raw().unwrap_or(owner);
+    let _restore_host_quit = RestoreHostQuit(host_window.hwnd.get());
     let document = egui_ui::show_editor(
-        owner,
+        host_window,
         document,
         profile_path,
         edit_handle,
@@ -173,11 +202,31 @@ fn show_editor_menu(owner: aviutl2::Win32WindowHandle) -> aviutl2::AnyResult<()>
 
 #[cfg(test)]
 mod tests {
-    use super::CompositeFontEditorPlugin;
+    use super::{CompositeFontEditorPlugin, RestoreHostQuit};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        MSG, PM_NOREMOVE, PM_REMOVE, PeekMessageW, PostQuitMessage, WM_QUIT,
+    };
 
     #[test]
     fn config_entry_does_not_borrow_the_generic_plugin_singleton() {
         let _: fn(aviutl2::Win32WindowHandle) -> aviutl2::AnyResult<()> =
             CompositeFontEditorPlugin::show_config;
+    }
+
+    #[test]
+    fn restores_quit_message_consumed_by_a_nested_event_loop() {
+        let mut message = MSG::default();
+        // Create this test thread's message queue, then emulate winit removing
+        // the host's WM_QUIT before the outer AviUtl2 loop can see it.
+        unsafe {
+            let _ = PeekMessageW(&mut message, None, 0, 0, PM_NOREMOVE);
+            PostQuitMessage(0);
+            assert!(PeekMessageW(&mut message, None, WM_QUIT, WM_QUIT, PM_REMOVE).as_bool());
+        }
+        drop(RestoreHostQuit(1)); // No real Win32 window uses this handle.
+        unsafe {
+            assert!(PeekMessageW(&mut message, None, WM_QUIT, WM_QUIT, PM_REMOVE).as_bool());
+        }
+        assert_eq!(message.message, WM_QUIT);
     }
 }

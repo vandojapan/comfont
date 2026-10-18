@@ -1,0 +1,13 @@
+[package]
+name = "comfont-native-text-probe"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+aviutl2 = { version = "=0.50.0", default-features = false, features = ["generic", "filter"] }

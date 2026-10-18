@@ -8,13 +8,20 @@ use compositefont_core::{MetricUnit, ProfileDocument, UNICODE_PRESETS, parse_cod
 use eframe::egui::{self, AtomExt as _};
 use std::{
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread::{self, JoinHandle},
+    time::Duration,
 };
 use winit::platform::windows::EventLoopBuilderExtWindows;
 
 #[path = "egui_font_picker.rs"]
 mod font_picker;
 use font_picker::FontPicker;
+#[path = "font_preview.rs"]
+mod font_preview;
 #[path = "egui_selection.rs"]
 mod selection;
 use selection::RowSelection;
@@ -58,6 +65,57 @@ fn preview_input_fonts(definitions: &mut egui::FontDefinitions) {
 // Google Material Icons (Apache-2.0; bundled LICENSE.txt).
 fn icon_label(icon: char, label: &str) -> egui::WidgetText {
     material_label(icon, label, "MaterialIcons")
+}
+
+fn visibility_toggle(ui: &mut egui::Ui, value: &mut bool, label: &str) -> egui::Response {
+    let (rect, mut response) = ui.allocate_exact_size(egui::vec2(26.0, 28.0), egui::Sense::click());
+    if response.clicked() {
+        *value = !*value;
+        response.mark_changed();
+    }
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::Checkbox,
+            ui.is_enabled(),
+            *value,
+            format!("{label}の上書き"),
+        )
+    });
+    if ui.is_rect_visible(rect) {
+        if response.hovered() || response.has_focus() {
+            ui.painter()
+                .rect_filled(rect, 3.0, ui.visuals().widgets.hovered.bg_fill);
+        }
+        let center = rect.center();
+        let color = if *value {
+            egui::Color32::WHITE
+        } else {
+            egui::Color32::from_gray(128)
+        };
+        let stroke = egui::Stroke::new(1.6_f32, color);
+        let left = center - egui::vec2(9.0, 0.0);
+        let right = center + egui::vec2(9.0, 0.0);
+        for control in [
+            center - egui::vec2(0.0, 10.0),
+            center + egui::vec2(0.0, 10.0),
+        ] {
+            ui.painter()
+                .add(egui::epaint::QuadraticBezierShape::from_points_stroke(
+                    [left, control, right],
+                    false,
+                    egui::Color32::TRANSPARENT,
+                    stroke,
+                ));
+        }
+        ui.painter().circle_filled(center, 2.5, color);
+        if !*value {
+            let slash = [center - egui::vec2(9.0, 8.0), center + egui::vec2(9.0, 8.0)];
+            ui.painter()
+                .line_segment(slash, egui::Stroke::new(4.5_f32, ui.visuals().panel_fill));
+            ui.painter().line_segment(slash, stroke);
+        }
+    }
+    response
 }
 
 fn material_label(icon: char, label: &str, family: &'static str) -> egui::WidgetText {
@@ -197,7 +255,7 @@ fn font_name_input(ui: &mut egui::Ui, font: &mut String, width: f32) -> egui::Re
 }
 
 const LIGATURE_CHECK: char = '\u{e5ca}'; // Material check
-const LIGATURE_HELP: &str = "ONでこの範囲のリガチャを有効にします（初期ON）。OFFは強制解除し、接続形・結合記号・字間も変わる場合があります。anm2側の強制解除ONは全範囲に優先します。";
+const LIGATURE_HELP: &str = "設定画面のプレビュー専用です。OFFは任意のOpenTypeリガチャを無効化し、言語に必須の結合や結合文字は保持します。AviUtl2標準描画のリガチャ設定を変更する公開APIは未確認のため、動画出力には反映できません。";
 const FONT_TABLE_TITLES: [&str; 3] = ["名前 / 分類", "Unicode範囲", "フォント"];
 
 fn font_table_cell_rects(row: egui::Rect) -> [egui::Rect; 3] {
@@ -446,6 +504,8 @@ struct EditorApp {
     values: [f64; 5],
     selection: RowSelection,
     changed_fields: [bool; 8],
+    enabled: [bool; 7],
+    enabled_changed: [bool; 7],
     ligatures_enabled: bool,
     editing_profile: bool,
     focus_profile_editor: bool,
@@ -459,6 +519,32 @@ struct EditorApp {
     guides: bool,
     status: String,
     hover_help: Option<String>,
+}
+
+fn watch_host_window(
+    owner: isize,
+    ctx: egui::Context,
+    stop: Arc<AtomicBool>,
+) -> std::io::Result<JoinHandle<()>> {
+    thread::Builder::new()
+        .name("comfont-host-window-watch".to_owned())
+        .spawn(move || {
+            while !stop.load(Ordering::Acquire) {
+                // The configuration callback runs a nested native event loop. When
+                // AviUtl2 destroys its main window, close both eframe viewports so
+                // the callback can return and the host can finish shutting down.
+                if !crate::host_window_exists(owner) {
+                    ctx.send_viewport_cmd_to(
+                        egui::ViewportId::from_hash_of("font-picker-desktop"),
+                        egui::ViewportCommand::Close,
+                    );
+                    ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
+                    ctx.request_repaint();
+                    break;
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+        })
 }
 impl EditorApp {
     fn explain(&mut self, response: egui::Response, text: &str) -> egui::Response {
@@ -475,6 +561,16 @@ impl EditorApp {
         self.values = adjustment_values(adjustment);
         self.ligatures_enabled = !adjustment.disable_ligatures;
         self.changed_fields = [false; 8];
+        self.enabled = [
+            adjustment.font_family_enabled,
+            adjustment.size_enabled,
+            adjustment.baseline_shift_enabled,
+            adjustment.tracking_adjust_enabled,
+            adjustment.vertical_scale_enabled,
+            adjustment.horizontal_scale_enabled,
+            adjustment.ligature_setting_enabled,
+        ];
+        self.enabled_changed = [false; 7];
         if let Some(range) = self.model.selected_range() {
             self.start = format!("{:04X}", range.start);
             self.end = format!("{:04X}", range.end);
@@ -499,21 +595,31 @@ impl EditorApp {
                 parse_codepoint(&self.end)?,
             )?;
         }
-        if self.changed_fields.iter().any(|&changed| changed) {
+        if self.changed_fields.iter().any(|&changed| changed)
+            || self.enabled_changed.iter().any(|&changed| changed)
+        {
             let patch = AdjustmentPatch {
                 font_family: self.changed_fields[0].then(|| self.font.clone()),
+                font_family_enabled: self.enabled_changed[0].then_some(self.enabled[0]),
                 metric_unit: self.changed_fields[1].then_some(self.unit),
                 disable_ligatures: self.changed_fields[7].then_some(!self.ligatures_enabled),
                 values: std::array::from_fn(|index| {
                     (self.changed_fields[index + 2] || (index < 3 && self.changed_fields[1]))
                         .then_some(self.values[index])
                 }),
+                size_enabled: self.enabled_changed[1].then_some(self.enabled[1]),
+                baseline_shift_enabled: self.enabled_changed[2].then_some(self.enabled[2]),
+                tracking_adjust_enabled: self.enabled_changed[3].then_some(self.enabled[3]),
+                vertical_scale_enabled: self.enabled_changed[4].then_some(self.enabled[4]),
+                horizontal_scale_enabled: self.enabled_changed[5].then_some(self.enabled[5]),
+                ligature_setting_enabled: self.enabled_changed[6].then_some(self.enabled[6]),
             };
             candidate.patch_table_rows(&self.selection.rows, &patch)?;
         }
         self.preview_dirty |= self.model.document() != candidate.document();
         self.model = candidate;
         self.changed_fields = [false; 8];
+        self.enabled_changed = [false; 7];
         Ok(())
     }
     fn save(&mut self) -> Result<(), String> {
@@ -834,8 +940,8 @@ impl EditorApp {
                 }
             }
             for (icon, direction, tooltip) in [
-                ('\u{e5d8}', RowMoveDirection::Up, "上へ移動"),
-                ('\u{e5db}', RowMoveDirection::Down, "下へ移動"),
+                ('\u{e5d8}', RowMoveDirection::Up, "上へ移動。既定分類とカスタム範囲を混在して並べ替えます。分類をまたぐと候補フォントもまとめて移動します。"),
+                ('\u{e5db}', RowMoveDirection::Down, "下へ移動。既定分類とカスタム範囲を混在して並べ替えます。分類をまたぐと候補フォントもまとめて移動します。"),
             ] {
                 if self
                     .explain(
@@ -968,16 +1074,49 @@ impl EditorApp {
         }
         ui.horizontal_top(|ui| {
             ui.spacing_mut().interact_size.y = 32.0;
+            let font_enabled = visibility_toggle(ui, &mut self.enabled[0], "フォント");
+            self.enabled_changed[0] |= font_enabled.changed();
+            self.explain(font_enabled, "白い目：フォント名を上書き。灰色の斜線付きの目：上書きしません。入力値は保存します。");
             self.explain(ui.add_sized([48.0, 32.0], egui::Label::new("フォント")), "フォント名は直接入力、または右端の一覧から選択できます。空欄はフォントを変更しません。");
-            ui.scope(|ui| {
-                ui.spacing_mut().item_spacing.x = 0.0;
-                let width = (ui.available_width() - 140.0).clamp(160.0, 420.0);
-                let input = font_name_input(ui, &mut self.font, width);
-                self.changed_fields[0] |= input.changed();
-                self.explain(input.clone(), "フォント名は直接入力、または右端の一覧から選択できます。空欄はフォントを変更しません。");
-                let button = ui.add_sized([36.0, 32.0], egui::Button::new(icon_label('', "")));
-                self.explain(button.clone(), "フォント一覧を開きます。検索して選択できます。");
-                self.font_picker.button(&button, input.rect.union(button.rect), input.rect.height());
+            ui.add_enabled_ui(self.enabled[0], |ui| {
+                ui.scope(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    let width = (ui.available_width() - 140.0).clamp(120.0, 420.0);
+                    let input = font_name_input(ui, &mut self.font, width);
+                    self.changed_fields[0] |= input.changed();
+                    self.explain(input.clone(), "フォント名は直接入力、または右端の一覧から選択できます。空欄はフォントを変更しません。");
+                    let button = ui.add_sized([36.0, 32.0], egui::Button::new(icon_label('', "")));
+                    self.explain(button.clone(), "フォント一覧を開きます。検索して選択できます。");
+                    self.font_picker.button(&button, input.rect.union(button.rect), input.rect.height());
+                    if let Some(variations) = self
+                        .font_picker
+                        .variations(&self.font, &self.fonts, ui.ctx())
+                    {
+                        ui.add_space(6.0);
+                        let old_font = self.font.clone();
+                        let selected = variations
+                            .iter()
+                            .find(|item| item.family.eq_ignore_ascii_case(self.font.trim()))
+                            .map_or("バリエーション", |item| item.label.as_str());
+                        let response = egui::ComboBox::from_id_salt("font-variation")
+                            .width(142.0)
+                            .selected_text(selected)
+                            .show_ui(ui, |ui| {
+                                for variation in variations {
+                                    ui.selectable_value(
+                                        &mut self.font,
+                                        variation.family,
+                                        variation.label,
+                                    );
+                                }
+                            });
+                        self.changed_fields[0] |= self.font != old_font;
+                        self.explain(
+                            response.response,
+                            "OpenTypeのウェイト違いを選びます。選択するとフォント名をAviUtl2で認識される名前へ切り替えます。",
+                        );
+                    }
+                });
             });
             let old_unit = self.unit;
             let unit = egui::ComboBox::from_id_salt("unit")
@@ -1009,20 +1148,32 @@ impl EditorApp {
                                 ('\u{ea16}', "垂直 (%)", "文字を縦方向に拡大・縮小します。100%で元の高さです。"),
                                 ('\u{f69b}', "水平 (%)", "文字を横方向に拡大・縮小します。100%で元の幅です。"),
                             ][index];
-                            self.explain(ui.label(material_label(icon, label, "MaterialMetrics")), help);
-                            let response = metric_input(ui, &mut self.values[index], index);
+                            ui.horizontal(|ui| {
+                                let enabled = visibility_toggle(ui, &mut self.enabled[index + 1], label);
+                                self.enabled_changed[index + 1] |= enabled.changed();
+                                self.explain(enabled, &format!("白い目：{label}を上書き。灰色の斜線付きの目：上書きしません。入力値は保存します。"));
+                                self.explain(ui.label(material_label(icon, label, "MaterialMetrics")), help);
+                            });
+                            let response = ui.add_enabled_ui(self.enabled[index + 1], |ui| {
+                                metric_input(ui, &mut self.values[index], index)
+                            }).inner;
                             self.changed_fields[index + 2] |= response.changed();
                             self.explain(response, &format!("{help} ホイールで1ずつ、Shiftで0.1ずつ、Ctrlで10ずつ調整します。"));
                             ui.end_row();
                         }
                         if column == 1 {
-                            let label = ui.horizontal(|ui| {
-                                let (rect, _) = ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover());
-                                paint_link(ui.painter(), rect, ui.visuals().text_color());
-                                ui.label("リガチャ");
-                            }).response;
-                            self.explain(label, LIGATURE_HELP);
-                            let check = ui.checkbox(&mut self.ligatures_enabled, "有効");
+                            ui.horizontal(|ui| {
+                                let enabled = visibility_toggle(ui, &mut self.enabled[6], "リガチャ");
+                                self.enabled_changed[6] |= enabled.changed();
+                                self.explain(enabled, "プレビュー専用。白い目：リガチャ設定を上書き。灰色の斜線付きの目：元の設定を使います。動画出力には反映できません。");
+                                let label = ui.horizontal(|ui| {
+                                    let (rect, _) = ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover());
+                                    paint_link(ui.painter(), rect, ui.visuals().text_color());
+                                    ui.label("リガチャ（プレビュー）");
+                                }).response;
+                                self.explain(label, LIGATURE_HELP);
+                            });
+                            let check = ui.add_enabled(self.enabled[6], egui::Checkbox::new(&mut self.ligatures_enabled, "有効"));
                             self.changed_fields[7] |= check.changed();
                             self.explain(check, LIGATURE_HELP);
                             ui.end_row();
@@ -1230,7 +1381,9 @@ impl eframe::App for EditorApp {
         });
         let old_font = self.font.clone();
         self.font_picker.show(ctx, &self.fonts, &mut self.font);
-        self.changed_fields[0] |= self.font != old_font;
+        if self.font != old_font {
+            self.changed_fields[0] = true;
+        }
         self.range_dialog_ui(ctx);
         status_ui
             .add(egui::Label::new(self.hover_help.as_deref().unwrap_or(&self.status)).truncate());
@@ -1272,6 +1425,8 @@ pub fn show_editor(
         values: [100.0, 0.0, 0.0, 100.0, 100.0],
         selection: RowSelection::default(),
         changed_fields: [false; 8],
+        enabled: [true; 7],
+        enabled_changed: [false; 7],
         ligatures_enabled: true,
         editing_profile: false,
         focus_profile_editor: false,
@@ -1287,7 +1442,11 @@ pub fn show_editor(
         hover_help: None,
     };
     app.reset_selection();
-    let _ = owner;
+    let monitor_stop = Arc::new(AtomicBool::new(false));
+    let monitor_stop_for_app = Arc::clone(&monitor_stop);
+    let monitor_handle = Arc::new(Mutex::new(None::<JoinHandle<()>>));
+    let monitor_handle_for_app = Arc::clone(&monitor_handle);
+    let owner_hwnd = owner.hwnd.get();
     let _dpi_scope = ThreadDpiScope::enter();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -1304,10 +1463,14 @@ pub fn show_editor(
         dithering: false,
         ..Default::default()
     };
-    eframe::run_native(
+    let run_result = eframe::run_native(
         "合成フォント — β",
         options,
         Box::new(move |cc| {
+            let watcher = watch_host_window(owner_hwnd, cc.egui_ctx.clone(), monitor_stop_for_app)?;
+            if let Ok(mut handle) = monitor_handle_for_app.lock() {
+                *handle = Some(watcher);
+            }
             let mut visuals = egui::Visuals::dark();
             visuals.override_text_color = Some(egui::Color32::from_rgb(224, 228, 234));
             cc.egui_ctx.set_visuals(visuals);
@@ -1377,8 +1540,14 @@ pub fn show_editor(
             cc.egui_ctx.set_fonts(definitions);
             Ok(Box::new(app))
         }),
-    )
-    .map_err(|error| error.to_string())?;
+    );
+    monitor_stop.store(true, Ordering::Release);
+    if let Ok(mut handle) = monitor_handle.lock()
+        && let Some(handle) = handle.take()
+    {
+        let _ = handle.join();
+    }
+    run_result.map_err(|error| error.to_string())?;
     let document = result
         .lock()
         .map_err(|_| "保存状態を取得できません。")?
@@ -1389,6 +1558,22 @@ pub fn show_editor(
 #[cfg(test)]
 mod layout_tests {
     use super::*;
+
+    #[test]
+    fn host_window_watcher_closes_editor_when_owner_is_gone() {
+        let ctx = egui::Context::default();
+        let watcher = watch_host_window(1, ctx.clone(), Arc::new(AtomicBool::new(false)))
+            .expect("host-window watcher should start");
+        watcher.join().expect("host-window watcher should exit");
+
+        let output = ctx.run(egui::RawInput::default(), |_| {});
+        assert!(
+            output.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .contains(&egui::ViewportCommand::Close)
+        );
+    }
+
     #[test]
     fn numeric_wheel_adjusts_hovered_field_and_consumes_parent_scroll() {
         for (index, initial, delta, modifiers, expected) in [

@@ -134,6 +134,10 @@ const fn neutral_scale_ratio() -> f64 {
     1.0
 }
 
+const fn enabled_by_default() -> bool {
+    true
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MetricUnit {
@@ -166,15 +170,24 @@ impl Default for EffectiveFontMetrics {
 pub struct FontAdjustment {
     /// 空文字列は「現在のフォントを変更しない」を表す。
     pub font_family: String,
+    /// falseのときフォント名を描画へ渡さず、保存値は保持する。
+    #[serde(default = "enabled_by_default")]
+    pub font_family_enabled: bool,
     /// 先頭フォントに対象グリフがない場合に順番に試すフォントファミリー。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fallback_font_families: Vec<String>,
     /// 基準フォントサイズに掛ける倍率。`1.0`で変更なし。
     pub size_ratio: f64,
+    #[serde(default = "enabled_by_default")]
+    pub size_enabled: bool,
     /// 基準フォントサイズを1emとするベースライン移動量。
     pub baseline_shift_em: f64,
+    #[serde(default = "enabled_by_default")]
+    pub baseline_shift_enabled: bool,
     /// 基準フォントサイズを1emとする字送り補正量。
     pub tracking_adjust_em: f64,
+    #[serde(default = "enabled_by_default")]
+    pub tracking_adjust_enabled: bool,
     /// サイズ・ベースライン・字送りを絶対pxで保持する場合の単位指定。
     #[serde(default)]
     pub metric_unit: MetricUnit,
@@ -187,45 +200,120 @@ pub struct FontAdjustment {
     /// Illustratorの垂直比率に相当する倍率。`1.0`で変形なし。
     #[serde(default = "neutral_scale_ratio")]
     pub vertical_scale_ratio: f64,
+    #[serde(default = "enabled_by_default")]
+    pub vertical_scale_enabled: bool,
     /// Illustratorの水平比率に相当する倍率。`1.0`で変形なし。
     #[serde(default = "neutral_scale_ratio")]
     pub horizontal_scale_ratio: f64,
+    #[serde(default = "enabled_by_default")]
+    pub horizontal_scale_enabled: bool,
     /// 描画時にこの範囲の合字・必須結合を強制解除する。旧設定はOFF。
     #[serde(default)]
     pub disable_ligatures: bool,
+    /// falseのときリガチャ設定を出力せず、AviUtl2標準の字形形成を使う。
+    #[serde(default = "enabled_by_default")]
+    pub ligature_setting_enabled: bool,
 }
 
 impl FontAdjustment {
     pub fn neutral() -> Self {
         Self {
             font_family: String::new(),
+            font_family_enabled: true,
             fallback_font_families: Vec::new(),
             size_ratio: 1.0,
+            size_enabled: true,
             baseline_shift_em: 0.0,
+            baseline_shift_enabled: true,
             tracking_adjust_em: 0.0,
+            tracking_adjust_enabled: true,
             metric_unit: MetricUnit::Percent,
             size_px: None,
             baseline_shift_px: None,
             tracking_adjust_px: None,
             vertical_scale_ratio: 1.0,
+            vertical_scale_enabled: true,
             horizontal_scale_ratio: 1.0,
+            horizontal_scale_enabled: true,
             disable_ligatures: false,
+            ligature_setting_enabled: true,
         }
+    }
+
+    pub fn effective_font_family(&self) -> &str {
+        if self.font_family_enabled {
+            &self.font_family
+        } else {
+            ""
+        }
+    }
+
+    pub fn effective_vertical_scale_ratio(&self) -> f64 {
+        if self.vertical_scale_enabled {
+            self.vertical_scale_ratio
+        } else {
+            1.0
+        }
+    }
+
+    pub fn effective_horizontal_scale_ratio(&self) -> f64 {
+        if self.horizontal_scale_enabled {
+            self.horizontal_scale_ratio
+        } else {
+            1.0
+        }
+    }
+
+    pub fn effective_disable_ligatures(&self) -> bool {
+        self.ligature_setting_enabled && self.disable_ligatures
     }
 
     pub fn effective_metrics(&self, base_font_size: Option<f64>) -> Option<EffectiveFontMetrics> {
         match self.metric_unit {
             MetricUnit::Percent => Some(EffectiveFontMetrics {
-                size_ratio: self.size_ratio,
-                baseline_shift_em: self.baseline_shift_em,
-                tracking_adjust_em: self.tracking_adjust_em,
+                size_ratio: if self.size_enabled {
+                    self.size_ratio
+                } else {
+                    1.0
+                },
+                baseline_shift_em: if self.baseline_shift_enabled {
+                    self.baseline_shift_em
+                } else {
+                    0.0
+                },
+                tracking_adjust_em: if self.tracking_adjust_enabled {
+                    self.tracking_adjust_em
+                } else {
+                    0.0
+                },
             }),
             MetricUnit::Pixels => {
-                let base = base_font_size.filter(|value| value.is_finite() && *value > 0.0)?;
+                let needs_base = self.size_enabled
+                    || self.baseline_shift_enabled
+                    || self.tracking_adjust_enabled;
+                let base = needs_base
+                    .then(|| base_font_size.filter(|value| value.is_finite() && *value > 0.0))
+                    .flatten();
+                if needs_base && base.is_none() {
+                    return None;
+                }
+                let base = base.unwrap_or(1.0);
                 Some(EffectiveFontMetrics {
-                    size_ratio: self.size_px? / base,
-                    baseline_shift_em: self.baseline_shift_px? / base,
-                    tracking_adjust_em: self.tracking_adjust_px? / base,
+                    size_ratio: if self.size_enabled {
+                        self.size_px? / base
+                    } else {
+                        1.0
+                    },
+                    baseline_shift_em: if self.baseline_shift_enabled {
+                        self.baseline_shift_px? / base
+                    } else {
+                        0.0
+                    },
+                    tracking_adjust_em: if self.tracking_adjust_enabled {
+                        self.tracking_adjust_px? / base
+                    } else {
+                        0.0
+                    },
                 })
             }
         }
@@ -301,6 +389,14 @@ pub fn parse_codepoint(value: &str) -> Result<u32, String> {
     Ok(codepoint)
 }
 
+/// Display entries mix a legacy class (including its candidates) with a Unicode range.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileEntry {
+    Class(CharacterClass),
+    Range(usize),
+}
+
 /// 各文字分類のフォント設定を持つ合成フォントプロファイル。
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -314,6 +410,9 @@ pub struct CompositeFontProfile {
     /// Display order of legacy classes. It does not change character classification.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub class_order: Vec<CharacterClass>,
+    /// Mixed display order. Custom-range precedence is stored in custom_ranges.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entry_order: Vec<ProfileEntry>,
     pub name: String,
     pub western: FontAdjustment,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -340,6 +439,39 @@ pub struct CompositeFontProfile {
 }
 
 impl CompositeFontProfile {
+    /// Keep old class order when absent, ignoring duplicate and stale range entries.
+    pub fn ordered_entries(&self) -> Vec<ProfileEntry> {
+        let mut order = Vec::with_capacity(7 + self.custom_ranges.len());
+        let mut seen_classes = Vec::with_capacity(7);
+        let mut seen_ranges = vec![false; self.custom_ranges.len()];
+        for entry in self
+            .entry_order
+            .iter()
+            .copied()
+            .chain(self.ordered_classes().into_iter().map(ProfileEntry::Class))
+            .chain((0..self.custom_ranges.len()).map(ProfileEntry::Range))
+        {
+            let duplicate = match entry {
+                ProfileEntry::Class(class) => {
+                    if seen_classes.contains(&class) {
+                        true
+                    } else {
+                        seen_classes.push(class);
+                        false
+                    }
+                }
+                ProfileEntry::Range(index) => seen_ranges
+                    .get_mut(index)
+                    .map(|seen| std::mem::replace(seen, true))
+                    .unwrap_or(true),
+            };
+            if !duplicate {
+                order.push(entry);
+            }
+        }
+        order
+    }
+
     /// Missing classes are appended in the legacy order; duplicates are ignored.
     pub fn ordered_classes(&self) -> Vec<CharacterClass> {
         let mut order = Vec::with_capacity(7);
@@ -365,6 +497,7 @@ impl CompositeFontProfile {
             custom_ranges: Vec::new(),
             disabled_classes: Vec::new(),
             class_order: Vec::new(),
+            entry_order: Vec::new(),
             western: FontAdjustment::neutral(),
             western_fallbacks: Vec::new(),
             hiragana: FontAdjustment::neutral(),
@@ -465,12 +598,12 @@ impl CompositeFontProfile {
         let class_name = class.as_str();
 
         ResolvedFont {
-            font_family: adjustment.font_family.clone(),
+            font_family: adjustment.effective_font_family().to_owned(),
             size_ratio: metrics.size_ratio,
             baseline_shift_em: metrics.baseline_shift_em,
             tracking_adjust_em: metrics.tracking_adjust_em,
-            vertical_scale_ratio: adjustment.vertical_scale_ratio,
-            horizontal_scale_ratio: adjustment.horizontal_scale_ratio,
+            vertical_scale_ratio: adjustment.effective_vertical_scale_ratio(),
+            horizontal_scale_ratio: adjustment.effective_horizontal_scale_ratio(),
             category: class_name.to_owned(),
             rule_id: self.matching_range(codepoint).map_or_else(
                 || class_name.to_owned(),
@@ -607,6 +740,7 @@ mod tests {
             custom_ranges: Vec::new(),
             disabled_classes: Vec::new(),
             class_order: Vec::new(),
+            entry_order: Vec::new(),
             name: "subtitle".to_owned(),
             western: adjustment("Inter"),
             western_fallbacks: Vec::new(),
@@ -716,6 +850,37 @@ mod tests {
     }
 
     #[test]
+    fn disabled_parameters_keep_saved_values_but_resolve_to_no_override() {
+        let mut adjustment = FontAdjustment {
+            font_family: "Saved font".into(),
+            size_ratio: 1.35,
+            baseline_shift_em: 0.2,
+            tracking_adjust_em: -0.1,
+            vertical_scale_ratio: 0.8,
+            horizontal_scale_ratio: 1.2,
+            disable_ligatures: true,
+            ..FontAdjustment::neutral()
+        };
+        adjustment.font_family_enabled = false;
+        adjustment.size_enabled = false;
+        adjustment.baseline_shift_enabled = false;
+        adjustment.tracking_adjust_enabled = false;
+        adjustment.vertical_scale_enabled = false;
+        adjustment.horizontal_scale_enabled = false;
+        adjustment.ligature_setting_enabled = false;
+
+        assert_eq!(adjustment.font_family, "Saved font");
+        assert_eq!(adjustment.effective_font_family(), "");
+        assert_eq!(
+            adjustment.effective_metrics(None),
+            Some(EffectiveFontMetrics::default())
+        );
+        assert_eq!(adjustment.effective_vertical_scale_ratio(), 1.0);
+        assert_eq!(adjustment.effective_horizontal_scale_ratio(), 1.0);
+        assert!(!adjustment.effective_disable_ligatures());
+    }
+
+    #[test]
     fn class_display_order_defaults_and_normalizes_partial_orders() {
         let mut profile = CompositeFontProfile::neutral_default();
         assert_eq!(
@@ -747,6 +912,43 @@ mod tests {
                 CharacterClass::Other,
             ]
         );
+    }
+
+    #[test]
+    fn mixed_entry_order_preserves_legacy_order_and_normalizes_stale_references() {
+        let mut profile = test_profile();
+        profile.class_order = vec![CharacterClass::Western];
+        profile.custom_ranges.push(UnicodeRange {
+            name: "Latin".into(),
+            start: 0x41,
+            end: 0x5a,
+            adjustment: adjustment("Range"),
+        });
+        let loaded = profile.clone();
+        assert_eq!(
+            loaded.ordered_entries()[0],
+            ProfileEntry::Class(CharacterClass::Western)
+        );
+        assert_eq!(
+            loaded.ordered_entries().last(),
+            Some(&ProfileEntry::Range(0))
+        );
+        profile.entry_order = vec![
+            ProfileEntry::Range(0),
+            ProfileEntry::Range(99),
+            ProfileEntry::Class(CharacterClass::Digit),
+            ProfileEntry::Range(0),
+        ];
+        let entries = profile.ordered_entries();
+        assert_eq!(entries.len(), 8);
+        assert_eq!(
+            &entries[..2],
+            &[
+                ProfileEntry::Range(0),
+                ProfileEntry::Class(CharacterClass::Digit)
+            ]
+        );
+        assert_eq!(profile.resolve('A').font_family, "Range");
     }
 
     #[test]

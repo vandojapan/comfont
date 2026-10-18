@@ -1,0 +1,5 @@
+@描画
+--label:合成フォント検証
+--string@profile:comfont::プロファイル,probe
+-- 設定と実行の委譲のみ。本文や装飾文字列はLua側で変更しない。
+obj.effect("Comfont native text probe")

@@ -1,0 +1,30 @@
+@パイプ
+--label:テキスト装飾
+-- 設定欄なし。明示連携済みの本文を優先し、なければ保存原文を収集する。
+local ok, cf = pcall(obj.module, "compositefont")
+if not ok or not cf or cf.api_version() < 15 then return end
+local raw = obj.getvalue("テキスト", "テキスト")
+if type(raw) ~= "string" or #raw > 65536 then return end
+local id, frame = tostring(obj.id), obj.frame
+local text, producer, source = cf.generated_text(id, frame, raw)
+if type(text) == "string" then
+    if type(producer) ~= "string" then return end
+    local found, current = pcall(obj.getvalue, producer, "スクリプト")
+    if found and current == source then return end
+end
+if not cf.forget_text(id, frame) then return end
+text = cf.decode_text(raw)
+-- 本文内のLuaを再実行したり、別オブジェクトのグローバル変数を拾ったりしない。
+if text:find("<?", 1, true) then return end
+cf.capture_text(text, id, frame, raw)
+
+@描画
+--label:テキスト装飾
+--information:通常はAviUtl2標準描画で装飾します。リガチャ強制ONは全体画像描画の試験機能です。Lua本文は自動処理しません。
+--string@profile:comfont::プロファイル,default
+--check@force_ligatures:comfont::リガチャを強制ON,false
+--select@antialias:comfont::アンチエイリアス=0,標準=0,滑らか=1,なし=2
+--hide@antialias:force_ligatures==0
+-- 本文は保存したまま、装飾と標準描画をaux2に委譲する。
+-- Luaを含む本文・未対応タグはaux2側が検出して通常表示に戻す。
+obj.effect("Comfont native text")
