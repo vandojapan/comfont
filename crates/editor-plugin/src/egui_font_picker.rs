@@ -12,6 +12,8 @@ const RESIZE_EDGE_HEIGHT: f32 = 10.0;
 pub(super) struct FontPicker {
     state: Arc<Mutex<PickerState>>,
     anchor: Option<egui::Rect>,
+    weight_anchor: Option<egui::Rect>,
+    weights: Option<Arc<Vec<FontVariation>>>,
     fonts: Option<Arc<Vec<String>>>,
     previews: FontPreviewCatalog,
     opening: bool,
@@ -19,6 +21,7 @@ pub(super) struct FontPicker {
 #[derive(Default)]
 struct PickerState {
     open: bool,
+    weight_mode: bool,
     focus_search: bool,
     had_focus: bool,
     visible: bool,
@@ -70,6 +73,7 @@ impl FontPicker {
 
     pub(super) fn begin_frame(&mut self) {
         self.anchor = None;
+        self.weight_anchor = None;
     }
     pub(super) fn button(
         &mut self,
@@ -81,11 +85,27 @@ impl FontPicker {
         let mut state = self.state.lock().unwrap();
         state.search_height_pixels = search_height * response.ctx.pixels_per_point();
         if response.clicked() {
-            state.open = !state.open;
+            state.open = !state.open || state.weight_mode;
+            state.weight_mode = false;
             state.focus_search = state.open;
             state.had_focus = false;
             state.visible = false;
             state.geometry = None;
+            self.opening = state.open;
+        }
+    }
+    pub(super) fn weight_button(&mut self, response: &egui::Response, weights: Vec<FontVariation>) {
+        self.weight_anchor = Some(response.rect);
+        self.weights = Some(Arc::new(weights));
+        if response.clicked() {
+            let mut state = self.state.lock().unwrap();
+            state.open = !state.open || !state.weight_mode;
+            state.weight_mode = true;
+            state.focus_search = state.open;
+            state.had_focus = false;
+            state.visible = false;
+            state.geometry = None;
+            state.search_height_pixels = response.rect.height() * response.ctx.pixels_per_point();
             self.opening = state.open;
         }
     }
@@ -98,7 +118,11 @@ impl FontPicker {
         if !state.open {
             return;
         }
-        let Some(anchor) = self.anchor else {
+        let Some(anchor) = (if state.weight_mode {
+            self.weight_anchor
+        } else {
+            self.anchor
+        }) else {
             state.open = false;
             return;
         };
@@ -127,14 +151,23 @@ impl FontPicker {
         let initial_position = anchor_pixels.left_bottom() / ctx.pixels_per_point();
         let creating = state.geometry.is_none();
         let visible = state.visible;
-        let initial_height = state.height_points.unwrap_or(1.0);
+        let initial_height = if state.weight_mode {
+            1.0
+        } else {
+            state.height_points.unwrap_or(1.0)
+        };
+        let weights = state.weight_mode.then(|| self.weights.clone()).flatten();
         drop(state);
         self.opening = false;
         let fonts = Arc::clone(self.fonts.get_or_insert_with(|| Arc::new(fonts.to_vec())));
         let previews = self.previews.clone();
         let state = Arc::clone(&self.state);
         let mut builder = egui::ViewportBuilder::default()
-            .with_title("合成フォント — フォント選択")
+            .with_title(if weights.is_some() {
+                "合成フォント — ウェイト選択"
+            } else {
+                "合成フォント — フォント選択"
+            })
             .with_decorations(false)
             .with_resizable(false)
             .with_taskbar(false)
@@ -154,7 +187,13 @@ impl FontPicker {
             egui::ViewportId::from_hash_of("font-picker-desktop"),
             builder,
             move |ctx, _class| {
-                render_picker(ctx, &fonts, &state, &previews);
+                render_picker(
+                    ctx,
+                    &fonts,
+                    weights.as_deref().map(Vec::as_slice),
+                    &state,
+                    &previews,
+                );
             },
         );
     }
@@ -217,6 +256,30 @@ fn selected_font_scroll_offset(
     first_visible as f32 * (row_height + spacing)
 }
 
+fn weight_picker_geometry(
+    anchor: egui::Rect,
+    bounds: egui::Rect,
+    desired_height: f32,
+) -> egui::Rect {
+    let height = desired_height.min(bounds.height()).max(1.0);
+    let width = anchor.width().min(bounds.width()).max(1.0);
+    let below = bounds.bottom() - anchor.bottom();
+    let above = anchor.top() - bounds.top();
+    let down = height <= below || (height > above && below >= above);
+    let top = if down {
+        anchor.bottom()
+    } else {
+        anchor.top() - height
+    };
+    egui::Rect::from_min_size(
+        egui::pos2(
+            anchor.left().clamp(bounds.left(), bounds.right() - width),
+            top.clamp(bounds.top(), bounds.bottom() - height),
+        ),
+        egui::vec2(width, height),
+    )
+}
+
 fn dismiss(ctx: &egui::Context, state: &mut PickerState, restore_focus: bool) {
     state.open = false;
     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
@@ -228,6 +291,7 @@ fn dismiss(ctx: &egui::Context, state: &mut PickerState, restore_focus: bool) {
 fn render_picker(
     ctx: &egui::Context,
     fonts: &[String],
+    weights: Option<&[FontVariation]>,
     shared: &Mutex<PickerState>,
     previews: &FontPreviewCatalog,
 ) {
@@ -260,7 +324,7 @@ fn render_picker(
     let bounds = bounds_pixels / ppp;
     let style = ctx.style();
     let frame = egui::Frame::popup(&style);
-    let row_height = style.spacing.interact_size.y.max(
+    let mut row_height = style.spacing.interact_size.y.max(
         ctx.fonts_mut(|f| f.row_height(&egui::TextStyle::Button.resolve(&style)))
             + 2.0 * style.spacing.button_padding.y,
     );
@@ -269,22 +333,38 @@ fn render_picker(
     let preview_font_size = (row_height - 2.0 * style.spacing.button_padding.y).max(1.0);
     let spacing = style.spacing.item_spacing.y;
     let search_height = state.search_height_pixels / ppp;
+    if weights.is_some() {
+        row_height = row_height.max(search_height);
+    }
     let query = state.search.to_lowercase();
     let matches: Vec<_> = fonts
         .iter()
         .filter(|f| query.is_empty() || f.to_lowercase().contains(&query))
         .collect();
-    let total_rows = matches.len() + 1;
-    let overhead =
-        search_height + spacing * 2.0 + RESIZE_EDGE_HEIGHT + frame.total_margin().sum().y;
-    let (geometry, rows, opens_down) = picker_geometry(
-        anchor,
-        bounds,
-        state.height_points,
-        overhead,
-        row_height,
-        spacing,
-    );
+    let total_rows = weights.map_or(matches.len() + 1, <[FontVariation]>::len);
+    let overhead = frame.total_margin().sum().y
+        + if weights.is_some() {
+            0.0
+        } else {
+            search_height + spacing * 2.0 + RESIZE_EDGE_HEIGHT
+        };
+    let (geometry, rows, opens_down) = if weights.is_some() {
+        let desired_height = overhead + (row_height + spacing) * total_rows as f32 - spacing;
+        let geometry = weight_picker_geometry(anchor, bounds, desired_height);
+        let rows = (((geometry.height() - overhead + spacing) / (row_height + spacing)).floor()
+            as usize)
+            .max(1);
+        (geometry, rows, geometry.top() >= anchor.bottom())
+    } else {
+        picker_geometry(
+            anchor,
+            bounds,
+            state.height_points,
+            overhead,
+            row_height,
+            spacing,
+        )
+    };
     let list_height = (geometry.height() - overhead).max(1.0);
     let changed_geometry = state.geometry != Some(geometry);
     if changed_geometry {
@@ -295,7 +375,11 @@ fn render_picker(
         ctx.request_repaint();
     }
     let opening = state.focus_search;
-    let selected_row = if state.current.is_empty() {
+    let selected_row = if let Some(weights) = weights {
+        weights
+            .iter()
+            .position(|weight| weight.family == state.current)
+    } else if state.current.is_empty() {
         Some(0)
     } else {
         matches
@@ -306,14 +390,16 @@ fn render_picker(
     let mut search_changed = false;
     let mut selected = None;
     egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
-        let search = ui.add_sized(
-            [ui.available_width(), search_height],
-            egui::TextEdit::singleline(&mut state.search).hint_text("フォントを検索"),
-        );
-        if opening {
-            search.request_focus();
+        if weights.is_none() {
+            let search = ui.add_sized(
+                [ui.available_width(), search_height],
+                egui::TextEdit::singleline(&mut state.search).hint_text("フォントを検索"),
+            );
+            if opening {
+                search.request_focus();
+            }
+            search_changed = search.changed();
         }
-        search_changed = search.changed();
         let mut list = egui::ScrollArea::vertical()
             .id_salt("font-search-results")
             .max_height(list_height)
@@ -332,17 +418,21 @@ fn render_picker(
         }
         list.show_rows(ui, row_height, total_rows, |ui, rows| {
             for row in rows {
-                let choice = if row == 0 {
+                let choice = if let Some(weights) = weights {
+                    weights[row].family.as_str()
+                } else if row == 0 {
                     ""
                 } else {
                     matches[row - 1].as_str()
                 };
-                let label = if row == 0 {
+                let label = if let Some(weights) = weights {
+                    weights[row].label.as_str()
+                } else if row == 0 {
                     "（変更なし）"
                 } else {
                     choice
                 };
-                let (font_family, texture) = if row == 0 {
+                let (font_family, texture) = if weights.is_some() || row == 0 {
                     (None, None)
                 } else {
                     previews.preview(choice, preview_font_size, ctx)
@@ -354,7 +444,13 @@ fn render_picker(
                         state.current == choice,
                         text,
                         font_family,
-                        if row == 0 { 16.0 } else { preview_font_size },
+                        if weights.is_some() {
+                            egui::TextStyle::Button.resolve(&style).size
+                        } else if row == 0 {
+                            16.0
+                        } else {
+                            preview_font_size
+                        },
                     ),
                 );
                 if let Some(texture) = texture {
@@ -381,53 +477,56 @@ fn render_picker(
                 }
             }
         });
-        ui.add_space(spacing);
-        let (resize_edge, response) = ui.allocate_exact_size(
-            egui::vec2(ui.available_width(), RESIZE_EDGE_HEIGHT),
-            egui::Sense::drag(),
-        );
-        if response.hovered() || response.dragged() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
-        }
-        let stroke =
-            egui::Stroke::new(1.0_f32, ui.visuals().widgets.noninteractive.bg_stroke.color);
-        ui.painter()
-            .line_segment([resize_edge.left_top(), resize_edge.right_top()], stroke);
-        let grip_center = resize_edge.center();
-        for offset in [-3.0, 0.0, 3.0] {
-            let y = grip_center.y + offset;
-            ui.painter().line_segment(
-                [
-                    egui::pos2(grip_center.x - 5.0, y),
-                    egui::pos2(grip_center.x + 5.0, y),
-                ],
-                stroke,
+        if weights.is_none() {
+            ui.add_space(spacing);
+            let (resize_edge, response) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), RESIZE_EDGE_HEIGHT),
+                egui::Sense::drag(),
             );
+            if response.hovered() || response.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+            }
+            let stroke =
+                egui::Stroke::new(1.0_f32, ui.visuals().widgets.noninteractive.bg_stroke.color);
+            ui.painter()
+                .line_segment([resize_edge.left_top(), resize_edge.right_top()], stroke);
+            let grip_center = resize_edge.center();
+            for offset in [-3.0, 0.0, 3.0] {
+                let y = grip_center.y + offset;
+                ui.painter().line_segment(
+                    [
+                        egui::pos2(grip_center.x - 5.0, y),
+                        egui::pos2(grip_center.x + 5.0, y),
+                    ],
+                    stroke,
+                );
+            }
+            if response.drag_started() {
+                let pointer_y = response
+                    .interact_pointer_pos()
+                    .map_or(resize_edge.center().y, |position| position.y);
+                state.resize_start = Some((geometry.height(), pointer_y, opens_down));
+            }
+            if response.dragged()
+                && let (Some((start_height, start_y, down)), Some(pointer)) =
+                    (state.resize_start, response.interact_pointer_pos())
+            {
+                let max_height = if down {
+                    (bounds.bottom() - anchor.bottom()).max(1.0)
+                } else {
+                    (anchor.top() - bounds.top()).max(1.0)
+                };
+                let minimum_height = (overhead + row_height).min(max_height);
+                let delta = (pointer.y - start_y) * if down { 1.0 } else { -1.0 };
+                state.height_points =
+                    Some((start_height + delta).clamp(minimum_height, max_height));
+                ctx.request_repaint();
+            }
+            if response.drag_stopped() {
+                state.resize_start = None;
+            }
+            response.on_hover_text("下辺を上下にドラッグして表示領域を変更");
         }
-        if response.drag_started() {
-            let pointer_y = response
-                .interact_pointer_pos()
-                .map_or(resize_edge.center().y, |position| position.y);
-            state.resize_start = Some((geometry.height(), pointer_y, opens_down));
-        }
-        if response.dragged()
-            && let (Some((start_height, start_y, down)), Some(pointer)) =
-                (state.resize_start, response.interact_pointer_pos())
-        {
-            let max_height = if down {
-                (bounds.bottom() - anchor.bottom()).max(1.0)
-            } else {
-                (anchor.top() - bounds.top()).max(1.0)
-            };
-            let minimum_height = (overhead + row_height).min(max_height);
-            let delta = (pointer.y - start_y) * if down { 1.0 } else { -1.0 };
-            state.height_points = Some((start_height + delta).clamp(minimum_height, max_height));
-            ctx.request_repaint();
-        }
-        if response.drag_stopped() {
-            state.resize_start = None;
-        }
-        response.on_hover_text("下辺を上下にドラッグして表示領域を変更");
     });
     state.focus_search = false;
     if search_changed {
@@ -535,6 +634,33 @@ mod tests {
         assert_eq!(above.bottom(), field.top());
         assert_eq!(above.left(), field.left());
         assert!(work.contains_rect(above));
+    }
+
+    #[test]
+    fn weight_menu_fits_all_rows_using_the_desktop_instead_of_editor_height() {
+        let work = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1920.0, 1040.0));
+        let field = egui::Rect::from_min_size(egui::pos2(300.0, 500.0), egui::vec2(142.0, 32.0));
+        let popup = weight_picker_geometry(field, work, 324.0);
+        assert_eq!(popup.min, field.left_bottom());
+        assert_eq!(popup.height(), 324.0);
+        // Even if neither side has enough room, show the full menu by shifting
+        // it within the desktop, rather than imposing the parent window limit.
+        let tall = weight_picker_geometry(field, work, 900.0);
+        assert_eq!(tall.height(), 900.0);
+        assert!(work.contains_rect(tall));
+    }
+
+    #[test]
+    fn oversized_weight_menu_clamps_to_monitor_work_area() {
+        let work = egui::Rect::from_min_max(egui::pos2(-1920.0, -200.0), egui::pos2(0.0, 840.0));
+        let field = egui::Rect::from_min_size(egui::pos2(-100.0, 700.0), egui::vec2(142.0, 32.0));
+        let popup = weight_picker_geometry(field, work, 2000.0);
+        assert_eq!(popup.height(), work.height());
+        assert_eq!(popup.width(), field.width());
+        assert!(work.contains_rect(popup));
+        let shorter = weight_picker_geometry(field, work, 324.0);
+        assert_eq!(shorter.bottom(), field.top());
+        assert!(work.contains_rect(shorter));
     }
 
     #[test]
