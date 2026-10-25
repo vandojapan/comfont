@@ -28,6 +28,7 @@ try {
     @((Join-Path $projectRoot 'scripts/@comfont.anm2'), 'Script/@comfont.anm2'),
     @((Join-Path $projectRoot 'scripts/合成フォント字幕.object'), 'Alias/合成フォント字幕.object'),
     @((Join-Path $projectRoot 'scripts/comfont-inline-snippet.lua'), 'Plugin/comfont-snippets/decorate-text.lua'),
+    @((Join-Path $projectRoot 'scripts/comfont-control-snippet.lua'), 'Plugin/comfont-snippets/script-control.lua'),
     @((Join-Path $projectRoot 'resource/material-icons/LICENSE.txt'), 'Plugin/comfont-licenses/material-icons.txt'),
     @((Join-Path $projectRoot 'resource/lucide/LICENSE.txt'), 'Plugin/comfont-licenses/lucide.txt'),
     @((Join-Path $projectRoot 'resource/unicode/LICENSE.txt'), 'Plugin/comfont-licenses/unicode.txt'),
@@ -37,7 +38,7 @@ try {
 } finally { $zip.Dispose(); $stream.Dispose() }
 $check = [IO.Compression.ZipFile]::OpenRead($zipPath)
 try {
-  if ($check.Entries.Count -ne 8) { throw 'Unexpected package entry count' }
+  if ($check.Entries.Count -ne 9) { throw 'Unexpected package entry count' }
   if ($null -ne $check.GetEntry('Script/合成フォント.anm2')) { throw 'Legacy anm2 must not be packaged' }
   if ($null -eq $check.GetEntry('Script/@comfont.anm2')) { throw 'Comfont pipeline script is missing' }
   foreach ($entry in $check.Entries) {
@@ -45,6 +46,7 @@ try {
   }
   if ($null -eq $check.GetEntry('Alias/合成フォント字幕.object')) { throw 'Subtitle object is missing' }
   if ($null -eq $check.GetEntry('Plugin/comfont-snippets/decorate-text.lua')) { throw 'Manual integration snippet is missing' }
+  if ($null -eq $check.GetEntry('Plugin/comfont-snippets/script-control.lua')) { throw 'Script control snippet is missing' }
   foreach ($entry in $check.Entries) { Write-Output ($variant + ': ' + $entry.FullName + ' (' + $entry.Length + ' bytes)') }
   $plugin = $check.GetEntry('Plugin/comfont.aux2')
   $reader = $plugin.Open()

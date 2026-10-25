@@ -73,6 +73,8 @@ impl FilterPlugin for NativeTextFilter {
         let started = std::time::Instant::now();
         log_once(0, "renderer entered");
         let object = video.object.handle;
+        let object_id = video.object.id.to_string();
+        let object_frame = f64::from(video.object.frame);
         let section = video.read_section();
         let count = match section.count_object_effect(object, PROFILE_EFFECT) {
             Ok(count) => count,
@@ -123,17 +125,52 @@ impl FilterPlugin for NativeTextFilter {
             log_once(7, "standard text effect has no テキスト value");
             return Ok(());
         };
-        let source = render::decode_alias(&source_alias);
+        let saved_source = render::decode_alias(&source_alias);
+        let generated = {
+            let captured = {
+                let Ok(mut cache) = crate::generated_text::shared_cache().lock() else {
+                    return Ok(());
+                };
+                cache
+                    .get(&object_id, object_frame, &source_alias)
+                    .map(|text| {
+                        let producer = cache.producer(&object_id, object_frame, &source_alias);
+                        (text, producer)
+                    })
+            };
+            captured
+                .filter(|(_, producer)| {
+                    producer.as_ref().is_none_or(|(effect, script)| {
+                        producer_precedes_draw(&object_alias, effect)
+                            && producer_matches(effect, script, |name, index| {
+                                section
+                                    .get_object_effect_item(object, name, index, "スクリプト")
+                                    .ok()
+                            })
+                    })
+                })
+                .map(|(text, producer)| match producer {
+                    Some(_) => CapturedText::Effect(text),
+                    None => CapturedText::Inline(text),
+                })
+        };
+        let from_effect = matches!(&generated, Some(CapturedText::Effect(_)));
+        let Some((source, is_generated)) = native_source(&saved_source, generated) else {
+            log_once(10, "Lua text has no matching whole-body explicit capture");
+            return Ok(());
+        };
+        if is_generated {
+            log_once(
+                26,
+                "captured text routed to native text and emoji composition",
+            );
+        }
         if source.len() > MAX_TEXT_BYTES {
             log_once(8, "source text exceeded 64 KiB");
             return Ok(());
         }
         if source.contains('\0') {
             log_once(9, "source text contains NUL");
-            return Ok(());
-        }
-        if source.contains("<?") {
-            log_once(10, "Lua text is left to manual integration");
             return Ok(());
         }
         if !supports_text(&source) {
@@ -163,8 +200,20 @@ impl FilterPlugin for NativeTextFilter {
             .unwrap_or_default();
         let settings_elapsed = started.elapsed();
         log_once(22, "object settings read");
-        if force_ligatures && self.render_ligatures(video, &params, &source, &profile, antialias) {
+        // Explicit Lua hand-off always preserves AviUtl2's ordinary-text pixels.
+        // Never send it through the whole-object ligature rasterizer.
+        if !is_generated
+            && force_ligatures
+            && self.render_ligatures(video, &params, &source, &profile, antialias)
+        {
             return Ok(());
+        }
+        if is_generated {
+            // All subsequent host text passes receive the captured final text,
+            // never the saved Lua source. This also handles empty/plain captures.
+            if let Some((_, value)) = params.iter_mut().find(|(key, _)| key == "テキスト") {
+                *value = encode_alias(&source);
+            }
         }
 
         let decorated = {
@@ -185,7 +234,7 @@ impl FilterPlugin for NativeTextFilter {
         if self.render_svg_emoji(video, &params, &decorated) {
             return Ok(());
         }
-        if decorated == source || decorated.len() > MAX_TEXT_BYTES {
+        if (!is_generated && decorated == source) || decorated.len() > MAX_TEXT_BYTES {
             log_once(
                 14,
                 &format!(
@@ -218,12 +267,29 @@ impl FilterPlugin for NativeTextFilter {
         );
         // This host call invokes the standard DirectWrite text renderer with
         // temporary values. Only the rendered image changes for this frame.
+        let previous_size = from_effect
+            .then(|| video.get_image_resource_size(&ImageResource::Object).ok())
+            .flatten();
         match video.exec_effect(
             "テキスト",
             params.iter().map(|(key, value)| (key, value)),
             &ImageResource::Object,
         ) {
-            Ok(()) => log_once(17, "standard text renderer completed successfully"),
+            Ok(()) => {
+                // exec_effect changes the host image, but aviutl2-rs writes its
+                // earlier param snapshot back on return. Keep the same anchor
+                // when a script replaces the input with a differently sized image.
+                if let Some(before) = previous_size
+                    && let Ok(after) = video.get_image_resource_size(&ImageResource::Object)
+                    && let Some(align) =
+                        parameter_string(&params, "文字揃え").and_then(|v| text_alignment(&v))
+                {
+                    let (cx, cy) = replacement_center_delta(before, after, align);
+                    video.param.cx += cx;
+                    video.param.cy += cy;
+                }
+                log_once(17, "standard text renderer completed successfully");
+            }
             Err(error) => {
                 log_once(18, &format!("standard text renderer failed: {error}"));
             }
@@ -282,6 +348,82 @@ fn decorate_native_text(
         });
     }
     result
+}
+
+enum CapturedText {
+    Inline(String),
+    // The caller has checked the current producer effect and script.
+    Effect(String),
+}
+
+/// An explicit effect submission replaces the complete text input. An inline
+/// submission must still cover exactly one complete Lua block.
+fn native_source(saved: &str, captured: Option<CapturedText>) -> Option<(String, bool)> {
+    let captured = match captured {
+        Some(CapturedText::Effect(text)) => return Some((text, true)),
+        Some(CapturedText::Inline(text)) => Some(text),
+        None => None,
+    };
+    if !saved.contains("<?") {
+        return Some((saved.to_owned(), false));
+    }
+    let body = saved.strip_prefix("<?")?.strip_suffix("?>")?;
+    if body.contains("<?") || body.contains("?>") {
+        return None;
+    }
+    captured.map(|text| (text, true))
+}
+
+fn producer_matches(
+    effect: &str,
+    source: &str,
+    mut current_script: impl FnMut(&str, usize) -> Option<String>,
+) -> bool {
+    let (name, index) = match effect.rsplit_once(':') {
+        Some((name, index)) => match index.parse::<usize>() {
+            Ok(index) => (name, index),
+            Err(_) => return false,
+        },
+        None => (effect, 0),
+    };
+    current_script(name, index).is_some_and(|script| script == source)
+}
+
+fn producer_precedes_draw(alias: &str, producer: &str) -> bool {
+    let (name, index) = match producer.rsplit_once(':') {
+        Some((name, index)) => match index.parse::<usize>() {
+            Ok(index) => (name, index),
+            Err(_) => return false,
+        },
+        None => (producer, 0),
+    };
+    let Ok(table) = alias.parse::<aviutl2_alias::Table>() else {
+        return false;
+    };
+    let Some(object) = table.get_table("Object").or_else(|| table.get_table("0")) else {
+        return false;
+    };
+    let effects: Vec<_> = object.iter_subtables_as_array().collect();
+    let position = |target: &str, nth: usize| {
+        effects
+            .iter()
+            .enumerate()
+            .filter(|(_, effect)| {
+                effect
+                    .get_value("effect.name")
+                    .is_some_and(|name| name == target)
+            })
+            .nth(nth)
+            .map(|(position, _)| position)
+    };
+    matches!((position(name, index), position(PROFILE_EFFECT, 0)), (Some(producer), Some(draw)) if producer < draw)
+}
+
+fn replacement_center_delta(before: (u32, u32), after: (u32, u32), align: i32) -> (f32, f32) {
+    (
+        (align % 3 - 1) as f32 * (after.0 as f32 - before.0 as f32) / 2.0,
+        (align / 3 - 1) as f32 * (after.1 as f32 - before.1 as f32) / 2.0,
+    )
 }
 
 impl NativeTextFilter {
@@ -567,6 +709,117 @@ pub(crate) fn encode_alias(value: &str) -> String {
 #[cfg(test)]
 mod antialias_tests {
     use super::*;
+
+    #[test]
+    fn script_replacements_keep_each_alignment_anchor_when_dimensions_change() {
+        assert_eq!(
+            replacement_center_delta((100, 30), (300, 70), 0),
+            (-100.0, -20.0)
+        );
+        assert_eq!(
+            replacement_center_delta((100, 30), (300, 70), 4),
+            (0.0, 0.0)
+        );
+        assert_eq!(
+            replacement_center_delta((100, 30), (300, 70), 8),
+            (100.0, 20.0)
+        );
+        assert_eq!(
+            replacement_center_delta((300, 70), (100, 30), 0),
+            (100.0, 20.0)
+        );
+    }
+
+    #[test]
+    fn whole_lua_capture_replaces_source_without_decoding_or_evaluating_it() {
+        let saved = "<?error('saved Lua must not execute here')?>";
+        assert!(native_source(saved, None).is_none());
+        let text = "あ🇯🇵1️⃣👩‍💻\\n\n<#ff0000>赤<#>";
+        assert_eq!(
+            native_source(saved, Some(CapturedText::Inline(text.into()))),
+            Some((text.into(), true))
+        );
+        assert_eq!(
+            native_source(saved, Some(CapturedText::Inline(String::new()))),
+            Some((String::new(), true))
+        );
+        assert_eq!(
+            native_source(
+                "ordinary",
+                Some(CapturedText::Inline("stale capture".into()))
+            ),
+            Some(("ordinary".into(), false))
+        );
+        for saved in [
+            "prefix<?obj.mes(text)?>",
+            "<?obj.mes(text)?>suffix",
+            "<?a()?><?b()?>",
+        ] {
+            assert!(
+                native_source(saved, Some(CapturedText::Inline("partial result".into()))).is_none()
+            );
+        }
+        for text in ["<?error('generated Lua')?>", "<unknown>text", "a\tb"] {
+            let (text, generated) =
+                native_source(saved, Some(CapturedText::Inline(text.into()))).unwrap();
+            assert!(generated);
+            assert!(!supports_text(&text));
+        }
+    }
+
+    #[test]
+    fn explicit_effect_output_replaces_the_whole_input_including_empty_text() {
+        for saved in [
+            "original digits 123",
+            "",
+            "prefix<?a()?>suffix",
+            "<?a()?><?b()?>",
+        ] {
+            for text in ["あ1️⃣🇺🇸👩‍💻", "plain", "", "literal\\n\nnext"] {
+                assert_eq!(
+                    native_source(saved, Some(CapturedText::Effect(text.into()))),
+                    Some((text.into(), true))
+                );
+            }
+        }
+        assert_eq!(
+            native_source("original", None),
+            Some(("original".into(), false))
+        );
+    }
+
+    #[test]
+    fn captured_producer_must_still_match_the_current_effect_and_index() {
+        assert!(producer_matches(
+            "スクリプト制御:1",
+            "source",
+            |effect, index| {
+                assert_eq!((effect, index), ("スクリプト制御", 1));
+                Some("source".into())
+            }
+        ));
+        assert!(!producer_matches(
+            "スクリプト制御",
+            "source",
+            |_, _| Some("edited".into())
+        ));
+        assert!(!producer_matches("スクリプト制御", "source", |_, _| None));
+        assert!(!producer_matches(
+            "スクリプト制御:invalid",
+            "source",
+            |_, _| panic!("invalid index")
+        ));
+    }
+
+    #[test]
+    fn producer_must_precede_drawing_even_when_reusing_a_cached_frame() {
+        let alias = "[Object]\n[Object.0]\neffect.name=テキスト\n[Object.1]\neffect.name=スクリプト制御\n[Object.2]\neffect.name=描画@comfont\n[Object.3]\neffect.name=スクリプト制御\n";
+        assert!(producer_precedes_draw(alias, "スクリプト制御"));
+        assert!(producer_precedes_draw(alias, "スクリプト制御:0"));
+        assert!(!producer_precedes_draw(alias, "スクリプト制御:1"));
+        assert!(!producer_precedes_draw(alias, "スクリプト制御:2"));
+        assert!(!producer_precedes_draw(alias, "スクリプト制御:invalid"));
+    }
 
     #[test]
     fn selection_accepts_numeric_alias_formats_and_labels() {

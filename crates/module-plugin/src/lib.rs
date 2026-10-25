@@ -28,7 +28,7 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-const API_VERSION: i32 = 16;
+const API_VERSION: i32 = 18;
 
 pub use native_filter::NativeTextFilter;
 
@@ -1543,14 +1543,14 @@ impl IntoScriptModuleReturnValue for ScriptResolvedFont {
 #[aviutl2::plugin(ScriptModule)]
 pub struct CompositeFontModule {
     profiles: Mutex<ReloadableProfiles>,
-    generated_text: Mutex<generated_text::GeneratedTextCache>,
+    generated_text: &'static Mutex<generated_text::GeneratedTextCache>,
 }
 
 impl ScriptModule for CompositeFontModule {
     fn new(_info: aviutl2::AviUtl2Info) -> aviutl2::AnyResult<Self> {
         Ok(Self {
             profiles: Mutex::new(ReloadableProfiles::new(profile_path())),
-            generated_text: Mutex::new(generated_text::GeneratedTextCache::default()),
+            generated_text: generated_text::shared_cache(),
         })
     }
 

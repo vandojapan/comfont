@@ -1,5 +1,15 @@
 //! Frame-local text produced by Lua; no script is evaluated or written back here.
-use std::collections::VecDeque;
+use std::{
+    collections::VecDeque,
+    sync::{Mutex, OnceLock},
+};
+
+/// The Lua module and native filter are separate subplugins in the same DLL.
+/// Keep their bounded hand-off cache shared, without holding its lock in host calls.
+pub(crate) fn shared_cache() -> &'static Mutex<GeneratedTextCache> {
+    static CACHE: OnceLock<Mutex<GeneratedTextCache>> = OnceLock::new();
+    CACHE.get_or_init(Mutex::default)
+}
 
 const TEXT_LIMIT: usize = 64 * 1024;
 const ENTRY_LIMIT: usize = 64;

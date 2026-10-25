@@ -87,7 +87,9 @@ end
 package.preload["PSDToolKit"] = function()
     return { mes = function(opts, object)
         if not voice then return end
-        object.mes(opts.modifier(voice.text))
+        local text = voice.text
+        if type(opts.modifier) == "function" then text = opts.modifier(text) end
+        object.mes(text)
         object.ox, object.oy, object.oz = voice.x, voice.y, voice.z
     end }
 end
@@ -112,6 +114,14 @@ cache = nil
 version = 13
 assert(loadstring(body, "subtitle"))()
 assert(output == "<w0.050000000>fallback" and not cache)
+version = 17
+seen = nil
+assert(loadstring(body, "subtitle API 17 hand-off"))()
+assert(output == "<w0.050000000>fallback" and seen == nil)
+assert(cache.text == "fallback" and cache.source == encoded)
+voice = nil
+assert(loadstring(body, "empty subtitle API 17"))()
+assert(cache.text == "")
 version = 16
 
 -- The pipe only collects explicitly submitted/generated text; it never draws.
@@ -179,7 +189,7 @@ local function manual(profile, force)
     seen, output, text = nil, nil, "generated ABC"
     assert(loadstring(inline_snippet, "manual inline integration"))()
     assert(output == nil and saved["テキスト"] == saved_source)
-    if profile == nil then
+    if profile == nil or version >= 17 then
         assert(text == "generated ABC" and seen == nil)
     else
         assert(seen.name == profile and seen.size == 64 and seen.spacing == 3)
@@ -195,3 +205,89 @@ manual("default", 1)
 manual("default", "1")
 manual("missing", false)
 manual(nil, false) -- No active draw effect: keep the generated text unchanged.
+
+-- API 17 hands the undecorated full output to the native filter while keeping
+-- the original mes call. Do not predecorate the first native image: its centre
+-- must match an ordinary text input with the same full output.
+version = 17
+cache = nil
+assert(not inline_snippet:find("<" .. "?", 1, true))
+assert(not inline_snippet:find("?" .. ">", 1, true))
+manual("default", false)
+assert(cache.text == "generated ABC" and cache.source == saved_source)
+assert(cache.id == tostring(obj.id) and cache.frame == obj.frame)
+assert(cache.producer == nil)
+assert(pipe()) -- The collection-only pipe must preserve explicit inline captures.
+assert(cache.text == "generated ABC")
+text = ""
+assert(loadstring(inline_snippet, "empty inline capture"))()
+assert(cache.text == "")
+saved["テキスト"] = nil -- obj.load("text") producer without a standard text input.
+text = "standalone producer"
+assert(loadstring(inline_snippet, "non-text producer"))()
+assert(text == "<#red>standalone producer")
+assert(cache.text == "") -- Never invent a source key for another input type.
+saved["テキスト"] = "prefix<?existing producer?>"
+text = "partial"
+assert(loadstring(inline_snippet, "mixed input fallback"))()
+assert(text == "<#red>partial" and cache.text == "")
+
+-- A script-control filter submits the complete replacement, without drawing
+-- or requiring Lua in the standard text input. The native filter validates the
+-- producer before adopting this submission.
+version = 18
+saved["テキスト"] = "あABC\\n1️⃣ 🇯🇵 👩‍💻"
+saved.control = control_snippet
+local control = assert(loadstring(control_snippet, "script control integration"))
+cache, seen, output = nil, nil, nil
+assert(pcall(control))
+assert(cache.text == "あABC\n1️⃣ 🇯🇵 👩‍💻")
+assert(cache.source == saved["テキスト"] and cache.producer_source == saved.control)
+assert(cache.producer == "スクリプト制御")
+assert(cache.id == tostring(obj.id) and cache.frame == obj.frame)
+assert(seen == nil and output == nil)
+assert(pipe())
+assert(cache.producer_source == saved.control)
+-- A generic script-control snippet must not overwrite a subtitle captured by
+-- inline Lua with the saved Lua program itself, even when the subtitle is empty.
+for _, subtitle in ipairs({ "あABC 1️⃣ 🇯🇵 👩‍💻", "" }) do
+    saved["テキスト"] = "<?require('PSDToolKit').mes({id='L2'}, obj)?>"
+    cf.capture_text(subtitle, tostring(obj.id), obj.frame, saved["テキスト"])
+    assert(pcall(control))
+    assert(cache.text == subtitle and cache.producer == nil)
+end
+cache = nil
+assert(pcall(control)) -- Unlinked inline Lua is not a generated display string.
+assert(cache == nil)
+saved["テキスト"] = ""
+assert(pcall(control))
+assert(cache.text == "")
+saved.control = nil -- No provenance: do not manufacture a producer identity.
+cache = nil
+assert(pcall(control))
+assert(cache == nil)
+version = 17
+assert(not pcall(control)) -- Never silently use an unsupported core.
+
+-- The common PSDToolKit call prints its own text, without an explicit hand-off.
+-- Test the documented replacement verbatim so the user can paste it as-is.
+version = 18
+voice = { text = "あABC 1️⃣ 🇯🇵 👩‍💻", time = 0, x = 5, y = 6, z = 7 }
+local original = 'local o={id="L2"}; require("PSDToolKit").mes(o,obj)'
+saved["テキスト"] = "<?" .. original .. "?>"
+cache, seen, output = nil, nil, nil
+assert(loadstring(original, "unlinked standard PSDToolKit subtitle"))()
+assert(output == voice.text and cache == nil and seen == nil)
+saved["テキスト"] = psd_subtitle_example
+local psd_body = assert(psd_subtitle_example:match("^<%?(.*)%?>$"))
+local psd_run = assert(loadstring(psd_body, "documented PSDToolKit subtitle"))
+cache, seen, output = nil, nil, nil
+psd_run()
+assert(output == voice.text and cache.text == voice.text and seen == nil)
+assert(cache.source == psd_subtitle_example and cache.id == tostring(obj.id) and cache.frame == obj.frame)
+assert(cache.producer == nil)
+assert(obj.ox == 5 and obj.oy == 6 and obj.oz == 7)
+voice = nil
+output = nil
+psd_run()
+assert(cache.text == "" and output == nil) -- No ghost subtitle in an empty frame.
