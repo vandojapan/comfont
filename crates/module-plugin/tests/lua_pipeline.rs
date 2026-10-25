@@ -40,13 +40,18 @@ fn lua_generated_text_pipeline() {
         let state = new_state();
         assert!(!state.is_null());
         open_libs(state);
-        let bundle = include_str!("../../../scripts/@comfont.anm2");
+        let bundle = include_str!("../../../scripts/@comfont.anm2").replace("\r\n", "\n");
         let (pipe, anm2) = bundle.split_once("\n@描画\n").unwrap();
         let pipe = pipe.strip_prefix("@パイプ\n").unwrap();
-        let alias = include_str!("../../../scripts/合成フォント字幕.object");
-        let snippet = include_str!("../../../scripts/comfont-inline-snippet.lua");
+        let alias = include_str!("../../../scripts/合成フォント字幕.object").replace("\r\n", "\n");
+        let snippet = include_str!("../../../tests/lua/fixtures/inline_capture.lua");
+        let control = include_str!("../../../tests/lua/fixtures/effect_capture.lua");
+        let psd_example = include_str!("../../../tests/lua/fixtures/psd_subtitle.lua")
+            .replace("\r\n", "\n")
+            .trim_end()
+            .to_owned();
         let script = format!(
-            "anm2_source = [====[{anm2}]====]\npipe_source = [====[{pipe}]====]\nsubtitle_alias = [====[{alias}]====]\ninline_snippet = [====[{snippet}]====]\n{}",
+            "anm2_source = [====[{anm2}]====]\npipe_source = [====[{pipe}]====]\nsubtitle_alias = [====[{alias}]====]\ninline_snippet = [====[{snippet}]====]\ncontrol_snippet = [====[{control}]====]\npsd_subtitle_example = [====[{psd_example}]====]\n{}",
             include_str!("../../../tests/lua/script_pipeline.lua")
         );
         let loaded = load(

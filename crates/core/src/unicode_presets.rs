@@ -1,5 +1,6 @@
 // Unicode 17.0.0 Blocks.txt; see resource/unicode/LICENSE.txt.
-// Common blocks first, then remaining blocks in code point order.
+// Common ranges first (including a combined emoji range), then remaining blocks
+// in code point order.
 use super::UnicodePreset;
 
 pub const UNICODE_PRESETS: &[UnicodePreset] = &[
@@ -9,6 +10,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x4E00,
         end: 0x9FFF,
         frequent: true,
+        subranges: &[],
     },
     UnicodePreset {
         name: "ひらがな",
@@ -16,6 +18,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x3040,
         end: 0x309F,
         frequent: true,
+        subranges: &[],
     },
     UnicodePreset {
         name: "カタカナ",
@@ -23,6 +26,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x30A0,
         end: 0x30FF,
         frequent: true,
+        subranges: &[],
     },
     UnicodePreset {
         name: "欧文 (Basic Latin)",
@@ -30,6 +34,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x0000,
         end: 0x007F,
         frequent: true,
+        subranges: &[],
     },
     UnicodePreset {
         name: "半角・全角形",
@@ -37,6 +42,15 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xFF00,
         end: 0xFFEF,
         frequent: true,
+        subranges: &[],
+    },
+    UnicodePreset {
+        name: "絵文字（Unicode 18.0）",
+        block_name: "Emoji",
+        start: 0x0023,
+        end: 0xE007F,
+        frequent: true,
+        subranges: super::EMOJI_RANGES,
     },
     UnicodePreset {
         name: "ラテン1補助",
@@ -44,6 +58,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x0080,
         end: 0x00FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "ラテン文字拡張A",
@@ -51,6 +66,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x0100,
         end: 0x017F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "ラテン文字拡張B",
@@ -58,6 +74,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x0180,
         end: 0x024F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "IPA拡張",
@@ -65,6 +82,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x0250,
         end: 0x02AF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "前進を伴う修飾文字",
@@ -72,6 +90,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x02B0,
         end: 0x02FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "結合ダイアクリティカルマーク",
@@ -79,6 +98,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x0300,
         end: 0x036F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "ギリシャ文字・コプト文字",
@@ -86,6 +106,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x0370,
         end: 0x03FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "キリル文字",
@@ -93,6 +114,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x0400,
         end: 0x04FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "キリル文字補助",
@@ -100,6 +122,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x0500,
         end: 0x052F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "アルメニア文字",
@@ -107,6 +130,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x0530,
         end: 0x058F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "ヘブライ文字",
@@ -114,6 +138,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x0590,
         end: 0x05FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "アラビア文字",
@@ -121,6 +146,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x0600,
         end: 0x06FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Syriac",
@@ -128,6 +154,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x0700,
         end: 0x074F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Arabic Supplement",
@@ -135,6 +162,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x0750,
         end: 0x077F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Thaana",
@@ -142,6 +170,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x0780,
         end: 0x07BF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "NKo",
@@ -149,6 +178,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x07C0,
         end: 0x07FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Samaritan",
@@ -156,6 +186,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x0800,
         end: 0x083F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Mandaic",
@@ -163,6 +194,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x0840,
         end: 0x085F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Syriac Supplement",
@@ -170,6 +202,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x0860,
         end: 0x086F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Arabic Extended-B",
@@ -177,6 +210,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x0870,
         end: 0x089F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Arabic Extended-A",
@@ -184,6 +218,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x08A0,
         end: 0x08FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "デーヴァナーガリー文字",
@@ -191,6 +226,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x0900,
         end: 0x097F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "ベンガル文字",
@@ -198,6 +234,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x0980,
         end: 0x09FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "グルムキー文字",
@@ -205,6 +242,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x0A00,
         end: 0x0A7F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "グジャラート文字",
@@ -212,6 +250,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x0A80,
         end: 0x0AFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "オリヤー文字",
@@ -219,6 +258,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x0B00,
         end: 0x0B7F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "タミル文字",
@@ -226,6 +266,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x0B80,
         end: 0x0BFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "テルグ文字",
@@ -233,6 +274,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x0C00,
         end: 0x0C7F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "カンナダ文字",
@@ -240,6 +282,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x0C80,
         end: 0x0CFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "マラヤーラム文字",
@@ -247,6 +290,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x0D00,
         end: 0x0D7F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "シンハラ文字",
@@ -254,6 +298,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x0D80,
         end: 0x0DFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "タイ文字",
@@ -261,6 +306,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x0E00,
         end: 0x0E7F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "ラオ文字",
@@ -268,6 +314,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x0E80,
         end: 0x0EFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "チベット文字",
@@ -275,6 +322,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x0F00,
         end: 0x0FFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "ミャンマー文字",
@@ -282,6 +330,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1000,
         end: 0x109F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "グルジア文字",
@@ -289,6 +338,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10A0,
         end: 0x10FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "ハングル字母",
@@ -296,6 +346,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1100,
         end: 0x11FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "エチオピア文字",
@@ -303,6 +354,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1200,
         end: 0x137F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Ethiopic Supplement",
@@ -310,6 +362,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1380,
         end: 0x139F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "チェロキー文字",
@@ -317,6 +370,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x13A0,
         end: 0x13FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Unified Canadian Aboriginal Syllabics",
@@ -324,6 +378,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1400,
         end: 0x167F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Ogham",
@@ -331,6 +386,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1680,
         end: 0x169F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Runic",
@@ -338,6 +394,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x16A0,
         end: 0x16FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Tagalog",
@@ -345,6 +402,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1700,
         end: 0x171F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Hanunoo",
@@ -352,6 +410,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1720,
         end: 0x173F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Buhid",
@@ -359,6 +418,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1740,
         end: 0x175F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Tagbanwa",
@@ -366,6 +426,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1760,
         end: 0x177F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Khmer",
@@ -373,6 +434,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1780,
         end: 0x17FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "モンゴル文字",
@@ -380,6 +442,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1800,
         end: 0x18AF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Unified Canadian Aboriginal Syllabics Extended",
@@ -387,6 +450,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x18B0,
         end: 0x18FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Limbu",
@@ -394,6 +458,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1900,
         end: 0x194F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Tai Le",
@@ -401,6 +466,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1950,
         end: 0x197F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "New Tai Lue",
@@ -408,6 +474,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1980,
         end: 0x19DF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Khmer Symbols",
@@ -415,6 +482,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x19E0,
         end: 0x19FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Buginese",
@@ -422,6 +490,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1A00,
         end: 0x1A1F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Tai Tham",
@@ -429,6 +498,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1A20,
         end: 0x1AAF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Combining Diacritical Marks Extended",
@@ -436,6 +506,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1AB0,
         end: 0x1AFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Balinese",
@@ -443,6 +514,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1B00,
         end: 0x1B7F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Sundanese",
@@ -450,6 +522,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1B80,
         end: 0x1BBF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Batak",
@@ -457,6 +530,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1BC0,
         end: 0x1BFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Lepcha",
@@ -464,6 +538,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1C00,
         end: 0x1C4F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Ol Chiki",
@@ -471,6 +546,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1C50,
         end: 0x1C7F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Cyrillic Extended-C",
@@ -478,6 +554,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1C80,
         end: 0x1C8F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Georgian Extended",
@@ -485,6 +562,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1C90,
         end: 0x1CBF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Sundanese Supplement",
@@ -492,6 +570,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1CC0,
         end: 0x1CCF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Vedic Extensions",
@@ -499,6 +578,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1CD0,
         end: 0x1CFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "音声記号拡張",
@@ -506,6 +586,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1D00,
         end: 0x1D7F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Phonetic Extensions Supplement",
@@ -513,6 +594,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1D80,
         end: 0x1DBF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Combining Diacritical Marks Supplement",
@@ -520,6 +602,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1DC0,
         end: 0x1DFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "ラテン文字拡張追加",
@@ -527,6 +610,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1E00,
         end: 0x1EFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "ギリシャ文字拡張",
@@ -534,6 +618,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1F00,
         end: 0x1FFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "一般句読点",
@@ -541,6 +626,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x2000,
         end: 0x206F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "上付き・下付き文字",
@@ -548,6 +634,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x2070,
         end: 0x209F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "通貨記号",
@@ -555,6 +642,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x20A0,
         end: 0x20CF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "記号用結合ダイアクリティカルマーク",
@@ -562,6 +650,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x20D0,
         end: 0x20FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "文字様記号",
@@ -569,6 +658,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x2100,
         end: 0x214F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "数字形",
@@ -576,6 +666,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x2150,
         end: 0x218F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "矢印",
@@ -583,6 +674,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x2190,
         end: 0x21FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "数学演算子",
@@ -590,6 +682,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x2200,
         end: 0x22FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "その他の技術用記号",
@@ -597,6 +690,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x2300,
         end: 0x23FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "制御文字用記号",
@@ -604,6 +698,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x2400,
         end: 0x243F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "光学式文字認識",
@@ -611,6 +706,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x2440,
         end: 0x245F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "囲み英数字",
@@ -618,6 +714,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x2460,
         end: 0x24FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "罫線素片",
@@ -625,6 +722,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x2500,
         end: 0x257F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "ブロック要素",
@@ -632,6 +730,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x2580,
         end: 0x259F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "幾何学模様",
@@ -639,6 +738,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x25A0,
         end: 0x25FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "その他の記号",
@@ -646,6 +746,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x2600,
         end: 0x26FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "装飾記号",
@@ -653,6 +754,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x2700,
         end: 0x27BF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Miscellaneous Mathematical Symbols-A",
@@ -660,6 +762,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x27C0,
         end: 0x27EF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Supplemental Arrows-A",
@@ -667,6 +770,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x27F0,
         end: 0x27FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "点字",
@@ -674,6 +778,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x2800,
         end: 0x28FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Supplemental Arrows-B",
@@ -681,6 +786,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x2900,
         end: 0x297F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Miscellaneous Mathematical Symbols-B",
@@ -688,6 +794,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x2980,
         end: 0x29FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Supplemental Mathematical Operators",
@@ -695,6 +802,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x2A00,
         end: 0x2AFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Miscellaneous Symbols and Arrows",
@@ -702,6 +810,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x2B00,
         end: 0x2BFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Glagolitic",
@@ -709,6 +818,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x2C00,
         end: 0x2C5F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Latin Extended-C",
@@ -716,6 +826,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x2C60,
         end: 0x2C7F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Coptic",
@@ -723,6 +834,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x2C80,
         end: 0x2CFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Georgian Supplement",
@@ -730,6 +842,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x2D00,
         end: 0x2D2F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Tifinagh",
@@ -737,6 +850,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x2D30,
         end: 0x2D7F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Ethiopic Extended",
@@ -744,6 +858,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x2D80,
         end: 0x2DDF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Cyrillic Extended-A",
@@ -751,6 +866,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x2DE0,
         end: 0x2DFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Supplemental Punctuation",
@@ -758,6 +874,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x2E00,
         end: 0x2E7F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "CJK部首補助",
@@ -765,6 +882,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x2E80,
         end: 0x2EFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "康熙部首",
@@ -772,6 +890,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x2F00,
         end: 0x2FDF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "漢字構成記述文字",
@@ -779,6 +898,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x2FF0,
         end: 0x2FFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "CJK記号・句読点",
@@ -786,6 +906,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x3000,
         end: 0x303F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "注音字母",
@@ -793,6 +914,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x3100,
         end: 0x312F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "ハングル互換字母",
@@ -800,6 +922,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x3130,
         end: 0x318F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "漢文",
@@ -807,6 +930,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x3190,
         end: 0x319F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "注音字母拡張",
@@ -814,6 +938,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x31A0,
         end: 0x31BF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "CJK筆画",
@@ -821,6 +946,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x31C0,
         end: 0x31EF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "カタカナ音声拡張",
@@ -828,6 +954,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x31F0,
         end: 0x31FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "囲みCJK文字・月",
@@ -835,6 +962,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x3200,
         end: 0x32FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "CJK互換文字",
@@ -842,6 +970,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x3300,
         end: 0x33FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "CJK統合漢字拡張A",
@@ -849,6 +978,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x3400,
         end: 0x4DBF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Yijing Hexagram Symbols",
@@ -856,6 +986,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x4DC0,
         end: 0x4DFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Yi Syllables",
@@ -863,6 +994,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xA000,
         end: 0xA48F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Yi Radicals",
@@ -870,6 +1002,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xA490,
         end: 0xA4CF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Lisu",
@@ -877,6 +1010,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xA4D0,
         end: 0xA4FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Vai",
@@ -884,6 +1018,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xA500,
         end: 0xA63F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Cyrillic Extended-B",
@@ -891,6 +1026,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xA640,
         end: 0xA69F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Bamum",
@@ -898,6 +1034,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xA6A0,
         end: 0xA6FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Modifier Tone Letters",
@@ -905,6 +1042,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xA700,
         end: 0xA71F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Latin Extended-D",
@@ -912,6 +1050,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xA720,
         end: 0xA7FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Syloti Nagri",
@@ -919,6 +1058,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xA800,
         end: 0xA82F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Common Indic Number Forms",
@@ -926,6 +1066,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xA830,
         end: 0xA83F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Phags-pa",
@@ -933,6 +1074,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xA840,
         end: 0xA87F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Saurashtra",
@@ -940,6 +1082,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xA880,
         end: 0xA8DF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Devanagari Extended",
@@ -947,6 +1090,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xA8E0,
         end: 0xA8FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Kayah Li",
@@ -954,6 +1098,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xA900,
         end: 0xA92F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Rejang",
@@ -961,6 +1106,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xA930,
         end: 0xA95F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Hangul Jamo Extended-A",
@@ -968,6 +1114,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xA960,
         end: 0xA97F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Javanese",
@@ -975,6 +1122,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xA980,
         end: 0xA9DF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Myanmar Extended-B",
@@ -982,6 +1130,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xA9E0,
         end: 0xA9FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Cham",
@@ -989,6 +1138,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xAA00,
         end: 0xAA5F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Myanmar Extended-A",
@@ -996,6 +1146,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xAA60,
         end: 0xAA7F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Tai Viet",
@@ -1003,6 +1154,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xAA80,
         end: 0xAADF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Meetei Mayek Extensions",
@@ -1010,6 +1162,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xAAE0,
         end: 0xAAFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Ethiopic Extended-A",
@@ -1017,6 +1170,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xAB00,
         end: 0xAB2F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Latin Extended-E",
@@ -1024,6 +1178,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xAB30,
         end: 0xAB6F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Cherokee Supplement",
@@ -1031,6 +1186,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xAB70,
         end: 0xABBF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Meetei Mayek",
@@ -1038,6 +1194,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xABC0,
         end: 0xABFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "ハングル音節",
@@ -1045,6 +1202,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xAC00,
         end: 0xD7AF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Hangul Jamo Extended-B",
@@ -1052,6 +1210,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xD7B0,
         end: 0xD7FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "私用領域",
@@ -1059,6 +1218,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xE000,
         end: 0xF8FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "CJK互換漢字",
@@ -1066,6 +1226,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xF900,
         end: 0xFAFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Alphabetic Presentation Forms",
@@ -1073,6 +1234,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xFB00,
         end: 0xFB4F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Arabic Presentation Forms-A",
@@ -1080,6 +1242,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xFB50,
         end: 0xFDFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "異体字セレクタ",
@@ -1087,6 +1250,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xFE00,
         end: 0xFE0F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "縦書き用字形",
@@ -1094,6 +1258,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xFE10,
         end: 0xFE1F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Combining Half Marks",
@@ -1101,6 +1266,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xFE20,
         end: 0xFE2F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "CJK互換形",
@@ -1108,6 +1274,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xFE30,
         end: 0xFE4F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "小字形",
@@ -1115,6 +1282,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xFE50,
         end: 0xFE6F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Arabic Presentation Forms-B",
@@ -1122,6 +1290,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xFE70,
         end: 0xFEFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "特殊用途文字",
@@ -1129,6 +1298,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xFFF0,
         end: 0xFFFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Linear B Syllabary",
@@ -1136,6 +1306,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10000,
         end: 0x1007F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Linear B Ideograms",
@@ -1143,6 +1314,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10080,
         end: 0x100FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Aegean Numbers",
@@ -1150,6 +1322,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10100,
         end: 0x1013F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Ancient Greek Numbers",
@@ -1157,6 +1330,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10140,
         end: 0x1018F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Ancient Symbols",
@@ -1164,6 +1338,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10190,
         end: 0x101CF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Phaistos Disc",
@@ -1171,6 +1346,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x101D0,
         end: 0x101FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Lycian",
@@ -1178,6 +1354,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10280,
         end: 0x1029F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Carian",
@@ -1185,6 +1362,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x102A0,
         end: 0x102DF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Coptic Epact Numbers",
@@ -1192,6 +1370,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x102E0,
         end: 0x102FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Old Italic",
@@ -1199,6 +1378,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10300,
         end: 0x1032F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Gothic",
@@ -1206,6 +1386,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10330,
         end: 0x1034F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Old Permic",
@@ -1213,6 +1394,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10350,
         end: 0x1037F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Ugaritic",
@@ -1220,6 +1402,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10380,
         end: 0x1039F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Old Persian",
@@ -1227,6 +1410,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x103A0,
         end: 0x103DF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Deseret",
@@ -1234,6 +1418,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10400,
         end: 0x1044F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Shavian",
@@ -1241,6 +1426,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10450,
         end: 0x1047F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Osmanya",
@@ -1248,6 +1434,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10480,
         end: 0x104AF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Osage",
@@ -1255,6 +1442,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x104B0,
         end: 0x104FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Elbasan",
@@ -1262,6 +1450,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10500,
         end: 0x1052F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Caucasian Albanian",
@@ -1269,6 +1458,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10530,
         end: 0x1056F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Vithkuqi",
@@ -1276,6 +1466,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10570,
         end: 0x105BF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Todhri",
@@ -1283,6 +1474,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x105C0,
         end: 0x105FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Linear A",
@@ -1290,6 +1482,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10600,
         end: 0x1077F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Latin Extended-F",
@@ -1297,6 +1490,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10780,
         end: 0x107BF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Cypriot Syllabary",
@@ -1304,6 +1498,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10800,
         end: 0x1083F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Imperial Aramaic",
@@ -1311,6 +1506,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10840,
         end: 0x1085F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Palmyrene",
@@ -1318,6 +1514,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10860,
         end: 0x1087F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Nabataean",
@@ -1325,6 +1522,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10880,
         end: 0x108AF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Hatran",
@@ -1332,6 +1530,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x108E0,
         end: 0x108FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Phoenician",
@@ -1339,6 +1538,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10900,
         end: 0x1091F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Lydian",
@@ -1346,6 +1546,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10920,
         end: 0x1093F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Sidetic",
@@ -1353,6 +1554,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10940,
         end: 0x1095F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Meroitic Hieroglyphs",
@@ -1360,6 +1562,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10980,
         end: 0x1099F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Meroitic Cursive",
@@ -1367,6 +1570,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x109A0,
         end: 0x109FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Kharoshthi",
@@ -1374,6 +1578,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10A00,
         end: 0x10A5F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Old South Arabian",
@@ -1381,6 +1586,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10A60,
         end: 0x10A7F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Old North Arabian",
@@ -1388,6 +1594,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10A80,
         end: 0x10A9F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Manichaean",
@@ -1395,6 +1602,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10AC0,
         end: 0x10AFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Avestan",
@@ -1402,6 +1610,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10B00,
         end: 0x10B3F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Inscriptional Parthian",
@@ -1409,6 +1618,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10B40,
         end: 0x10B5F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Inscriptional Pahlavi",
@@ -1416,6 +1626,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10B60,
         end: 0x10B7F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Psalter Pahlavi",
@@ -1423,6 +1634,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10B80,
         end: 0x10BAF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Old Turkic",
@@ -1430,6 +1642,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10C00,
         end: 0x10C4F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Old Hungarian",
@@ -1437,6 +1650,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10C80,
         end: 0x10CFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Hanifi Rohingya",
@@ -1444,6 +1658,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10D00,
         end: 0x10D3F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Garay",
@@ -1451,6 +1666,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10D40,
         end: 0x10D8F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Rumi Numeral Symbols",
@@ -1458,6 +1674,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10E60,
         end: 0x10E7F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Yezidi",
@@ -1465,6 +1682,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10E80,
         end: 0x10EBF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Arabic Extended-C",
@@ -1472,6 +1690,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10EC0,
         end: 0x10EFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Old Sogdian",
@@ -1479,6 +1698,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10F00,
         end: 0x10F2F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Sogdian",
@@ -1486,6 +1706,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10F30,
         end: 0x10F6F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Old Uyghur",
@@ -1493,6 +1714,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10F70,
         end: 0x10FAF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Chorasmian",
@@ -1500,6 +1722,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10FB0,
         end: 0x10FDF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Elymaic",
@@ -1507,6 +1730,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x10FE0,
         end: 0x10FFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Brahmi",
@@ -1514,6 +1738,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x11000,
         end: 0x1107F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Kaithi",
@@ -1521,6 +1746,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x11080,
         end: 0x110CF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Sora Sompeng",
@@ -1528,6 +1754,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x110D0,
         end: 0x110FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Chakma",
@@ -1535,6 +1762,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x11100,
         end: 0x1114F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Mahajani",
@@ -1542,6 +1770,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x11150,
         end: 0x1117F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Sharada",
@@ -1549,6 +1778,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x11180,
         end: 0x111DF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Sinhala Archaic Numbers",
@@ -1556,6 +1786,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x111E0,
         end: 0x111FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Khojki",
@@ -1563,6 +1794,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x11200,
         end: 0x1124F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Multani",
@@ -1570,6 +1802,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x11280,
         end: 0x112AF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Khudawadi",
@@ -1577,6 +1810,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x112B0,
         end: 0x112FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Grantha",
@@ -1584,6 +1818,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x11300,
         end: 0x1137F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Tulu-Tigalari",
@@ -1591,6 +1826,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x11380,
         end: 0x113FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Newa",
@@ -1598,6 +1834,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x11400,
         end: 0x1147F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Tirhuta",
@@ -1605,6 +1842,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x11480,
         end: 0x114DF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Siddham",
@@ -1612,6 +1850,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x11580,
         end: 0x115FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Modi",
@@ -1619,6 +1858,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x11600,
         end: 0x1165F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Mongolian Supplement",
@@ -1626,6 +1866,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x11660,
         end: 0x1167F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Takri",
@@ -1633,6 +1874,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x11680,
         end: 0x116CF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Myanmar Extended-C",
@@ -1640,6 +1882,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x116D0,
         end: 0x116FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Ahom",
@@ -1647,6 +1890,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x11700,
         end: 0x1174F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Dogra",
@@ -1654,6 +1898,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x11800,
         end: 0x1184F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Warang Citi",
@@ -1661,6 +1906,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x118A0,
         end: 0x118FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Dives Akuru",
@@ -1668,6 +1914,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x11900,
         end: 0x1195F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Nandinagari",
@@ -1675,6 +1922,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x119A0,
         end: 0x119FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Zanabazar Square",
@@ -1682,6 +1930,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x11A00,
         end: 0x11A4F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Soyombo",
@@ -1689,6 +1938,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x11A50,
         end: 0x11AAF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Unified Canadian Aboriginal Syllabics Extended-A",
@@ -1696,6 +1946,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x11AB0,
         end: 0x11ABF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Pau Cin Hau",
@@ -1703,6 +1954,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x11AC0,
         end: 0x11AFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Devanagari Extended-A",
@@ -1710,6 +1962,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x11B00,
         end: 0x11B5F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Sharada Supplement",
@@ -1717,6 +1970,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x11B60,
         end: 0x11B7F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Sunuwar",
@@ -1724,6 +1978,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x11BC0,
         end: 0x11BFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Bhaiksuki",
@@ -1731,6 +1986,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x11C00,
         end: 0x11C6F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Marchen",
@@ -1738,6 +1994,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x11C70,
         end: 0x11CBF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Masaram Gondi",
@@ -1745,6 +2002,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x11D00,
         end: 0x11D5F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Gunjala Gondi",
@@ -1752,6 +2010,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x11D60,
         end: 0x11DAF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Tolong Siki",
@@ -1759,6 +2018,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x11DB0,
         end: 0x11DEF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Makasar",
@@ -1766,6 +2026,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x11EE0,
         end: 0x11EFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Kawi",
@@ -1773,6 +2034,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x11F00,
         end: 0x11F5F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Lisu Supplement",
@@ -1780,6 +2042,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x11FB0,
         end: 0x11FBF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Tamil Supplement",
@@ -1787,6 +2050,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x11FC0,
         end: 0x11FFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Cuneiform",
@@ -1794,6 +2058,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x12000,
         end: 0x123FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Cuneiform Numbers and Punctuation",
@@ -1801,6 +2066,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x12400,
         end: 0x1247F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Early Dynastic Cuneiform",
@@ -1808,6 +2074,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x12480,
         end: 0x1254F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Cypro-Minoan",
@@ -1815,6 +2082,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x12F90,
         end: 0x12FFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Egyptian Hieroglyphs",
@@ -1822,6 +2090,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x13000,
         end: 0x1342F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Egyptian Hieroglyph Format Controls",
@@ -1829,6 +2098,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x13430,
         end: 0x1345F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Egyptian Hieroglyphs Extended-A",
@@ -1836,6 +2106,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x13460,
         end: 0x143FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Anatolian Hieroglyphs",
@@ -1843,6 +2114,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x14400,
         end: 0x1467F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Gurung Khema",
@@ -1850,6 +2122,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x16100,
         end: 0x1613F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Bamum Supplement",
@@ -1857,6 +2130,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x16800,
         end: 0x16A3F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Mro",
@@ -1864,6 +2138,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x16A40,
         end: 0x16A6F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Tangsa",
@@ -1871,6 +2146,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x16A70,
         end: 0x16ACF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Bassa Vah",
@@ -1878,6 +2154,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x16AD0,
         end: 0x16AFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Pahawh Hmong",
@@ -1885,6 +2162,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x16B00,
         end: 0x16B8F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Kirat Rai",
@@ -1892,6 +2170,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x16D40,
         end: 0x16D7F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Medefaidrin",
@@ -1899,6 +2178,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x16E40,
         end: 0x16E9F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Beria Erfe",
@@ -1906,6 +2186,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x16EA0,
         end: 0x16EDF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Miao",
@@ -1913,6 +2194,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x16F00,
         end: 0x16F9F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Ideographic Symbols and Punctuation",
@@ -1920,6 +2202,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x16FE0,
         end: 0x16FFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Tangut",
@@ -1927,6 +2210,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x17000,
         end: 0x187FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Tangut Components",
@@ -1934,6 +2218,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x18800,
         end: 0x18AFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Khitan Small Script",
@@ -1941,6 +2226,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x18B00,
         end: 0x18CFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Tangut Supplement",
@@ -1948,6 +2234,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x18D00,
         end: 0x18D7F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Tangut Components Supplement",
@@ -1955,6 +2242,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x18D80,
         end: 0x18DFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "かな拡張B",
@@ -1962,6 +2250,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1AFF0,
         end: 0x1AFFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "かな補助",
@@ -1969,6 +2258,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1B000,
         end: 0x1B0FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "かな拡張A",
@@ -1976,6 +2266,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1B100,
         end: 0x1B12F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "小書きかな拡張",
@@ -1983,6 +2274,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1B130,
         end: 0x1B16F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Nushu",
@@ -1990,6 +2282,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1B170,
         end: 0x1B2FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Duployan",
@@ -1997,6 +2290,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1BC00,
         end: 0x1BC9F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Shorthand Format Controls",
@@ -2004,6 +2298,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1BCA0,
         end: 0x1BCAF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Symbols for Legacy Computing Supplement",
@@ -2011,6 +2306,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1CC00,
         end: 0x1CEBF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Miscellaneous Symbols Supplement",
@@ -2018,6 +2314,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1CEC0,
         end: 0x1CEFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Znamenny Musical Notation",
@@ -2025,6 +2322,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1CF00,
         end: 0x1CFCF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Byzantine Musical Symbols",
@@ -2032,6 +2330,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1D000,
         end: 0x1D0FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "音楽記号",
@@ -2039,6 +2338,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1D100,
         end: 0x1D1FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Ancient Greek Musical Notation",
@@ -2046,6 +2346,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1D200,
         end: 0x1D24F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Kaktovik Numerals",
@@ -2053,6 +2354,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1D2C0,
         end: 0x1D2DF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Mayan Numerals",
@@ -2060,6 +2362,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1D2E0,
         end: 0x1D2FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Tai Xuan Jing Symbols",
@@ -2067,6 +2370,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1D300,
         end: 0x1D35F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Counting Rod Numerals",
@@ -2074,6 +2378,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1D360,
         end: 0x1D37F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "数学用英数字記号",
@@ -2081,6 +2386,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1D400,
         end: 0x1D7FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Sutton SignWriting",
@@ -2088,6 +2394,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1D800,
         end: 0x1DAAF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Latin Extended-G",
@@ -2095,6 +2402,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1DF00,
         end: 0x1DFFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Glagolitic Supplement",
@@ -2102,6 +2410,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1E000,
         end: 0x1E02F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Cyrillic Extended-D",
@@ -2109,6 +2418,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1E030,
         end: 0x1E08F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Nyiakeng Puachue Hmong",
@@ -2116,6 +2426,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1E100,
         end: 0x1E14F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Toto",
@@ -2123,6 +2434,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1E290,
         end: 0x1E2BF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Wancho",
@@ -2130,6 +2442,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1E2C0,
         end: 0x1E2FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Nag Mundari",
@@ -2137,6 +2450,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1E4D0,
         end: 0x1E4FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Ol Onal",
@@ -2144,6 +2458,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1E5D0,
         end: 0x1E5FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Tai Yo",
@@ -2151,6 +2466,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1E6C0,
         end: 0x1E6FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Ethiopic Extended-B",
@@ -2158,6 +2474,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1E7E0,
         end: 0x1E7FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Mende Kikakui",
@@ -2165,6 +2482,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1E800,
         end: 0x1E8DF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Adlam",
@@ -2172,6 +2490,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1E900,
         end: 0x1E95F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Indic Siyaq Numbers",
@@ -2179,6 +2498,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1EC70,
         end: 0x1ECBF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Ottoman Siyaq Numbers",
@@ -2186,6 +2506,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1ED00,
         end: 0x1ED4F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Arabic Mathematical Alphabetic Symbols",
@@ -2193,6 +2514,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1EE00,
         end: 0x1EEFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "麻雀牌",
@@ -2200,6 +2522,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1F000,
         end: 0x1F02F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "ドミノ牌",
@@ -2207,6 +2530,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1F030,
         end: 0x1F09F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "トランプ",
@@ -2214,6 +2538,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1F0A0,
         end: 0x1F0FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "囲み英数字補助",
@@ -2221,6 +2546,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1F100,
         end: 0x1F1FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "囲み表意文字補助",
@@ -2228,6 +2554,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1F200,
         end: 0x1F2FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "その他の記号・絵文字",
@@ -2235,6 +2562,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1F300,
         end: 0x1F5FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "絵文字 (Emoticons)",
@@ -2242,6 +2570,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1F600,
         end: 0x1F64F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Ornamental Dingbats",
@@ -2249,6 +2578,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1F650,
         end: 0x1F67F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "交通・地図記号",
@@ -2256,6 +2586,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1F680,
         end: 0x1F6FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Alchemical Symbols",
@@ -2263,6 +2594,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1F700,
         end: 0x1F77F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Geometric Shapes Extended",
@@ -2270,6 +2602,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1F780,
         end: 0x1F7FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Supplemental Arrows-C",
@@ -2277,6 +2610,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1F800,
         end: 0x1F8FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "記号・絵文字補助",
@@ -2284,6 +2618,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1F900,
         end: 0x1F9FF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Chess Symbols",
@@ -2291,6 +2626,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1FA00,
         end: 0x1FA6F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "記号・絵文字拡張A",
@@ -2298,6 +2634,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1FA70,
         end: 0x1FAFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "Symbols for Legacy Computing",
@@ -2305,6 +2642,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x1FB00,
         end: 0x1FBFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "CJK統合漢字拡張B",
@@ -2312,6 +2650,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x20000,
         end: 0x2A6DF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "CJK統合漢字拡張C",
@@ -2319,6 +2658,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x2A700,
         end: 0x2B73F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "CJK統合漢字拡張D",
@@ -2326,6 +2666,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x2B740,
         end: 0x2B81F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "CJK統合漢字拡張E",
@@ -2333,6 +2674,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x2B820,
         end: 0x2CEAF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "CJK統合漢字拡張F",
@@ -2340,6 +2682,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x2CEB0,
         end: 0x2EBEF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "CJK統合漢字拡張I",
@@ -2347,6 +2690,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x2EBF0,
         end: 0x2EE5F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "CJK互換漢字補助",
@@ -2354,6 +2698,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x2F800,
         end: 0x2FA1F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "CJK統合漢字拡張G",
@@ -2361,6 +2706,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x30000,
         end: 0x3134F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "CJK統合漢字拡張H",
@@ -2368,6 +2714,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x31350,
         end: 0x323AF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "CJK統合漢字拡張J",
@@ -2375,6 +2722,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x323B0,
         end: 0x3347F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "タグ文字",
@@ -2382,6 +2730,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xE0000,
         end: 0xE007F,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "異体字セレクタ補助",
@@ -2389,6 +2738,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xE0100,
         end: 0xE01EF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "補助私用領域A",
@@ -2396,6 +2746,7 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0xF0000,
         end: 0xFFFFF,
         frequent: false,
+        subranges: &[],
     },
     UnicodePreset {
         name: "補助私用領域B",
@@ -2403,5 +2754,6 @@ pub const UNICODE_PRESETS: &[UnicodePreset] = &[
         start: 0x100000,
         end: 0x10FFFF,
         frequent: false,
+        subranges: &[],
     },
 ];

@@ -124,6 +124,10 @@ impl GenericPlugin for CompositeFontEditorPlugin {
         }
         registry.register_script_module(Some("compositefont"), &self.script_module);
         registry.register_filter_plugin(&self.native_text_filter);
+        if let Err(error) = compositefont_module::register_emoji_marker_font(registry) {
+            let _ =
+                aviutl2::logger::write_error_log(&format!("Comfont emoji marker font: {error}"));
+        }
         registry.register_menus::<Self>();
     }
 

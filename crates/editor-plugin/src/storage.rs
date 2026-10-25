@@ -111,6 +111,57 @@ mod tests {
     }
 
     #[test]
+    fn emoji_subranges_survive_save_load_and_malformed_ranges_are_rejected() {
+        let path = temporary_path("emoji-roundtrip");
+        let mut model = crate::model::EditorModel::new(ProfileDocument::with_builtin_default());
+        let preset = compositefont_core::UNICODE_PRESETS
+            .iter()
+            .find(|preset| preset.block_name == "Emoji")
+            .unwrap();
+        model.add_preset(preset).unwrap();
+        assert_eq!(model.table_row_count(), 8);
+        assert_eq!(model.table_row_range_text(7), "154範囲");
+        assert!(model.update_selected_range(0x23, 0xE007F).is_err());
+        model.selected_profile_mut().custom_ranges[0]
+            .adjustment
+            .font_family = "Emoji Font".into();
+        save_document(&path, model.document()).unwrap();
+        let loaded = load_document(&path).unwrap();
+        assert_eq!(&loaded, model.document());
+        for character in [
+            '❤',
+            '☀',
+            '🇯',
+            '\u{200D}',
+            '\u{FE0F}',
+            '\u{E0067}',
+            '\u{1FAFA}',
+        ] {
+            assert_eq!(
+                loaded.profiles[0].resolve(character).font_family,
+                "Emoji Font"
+            );
+        }
+        assert_ne!(loaded.profiles[0].resolve('漢').font_family, "Emoji Font");
+        assert_ne!(loaded.profiles[0].resolve('1').font_family, "Emoji Font");
+        assert_eq!(
+            loaded.profiles[0]
+                .adjustment_for_cluster("1️⃣")
+                .unwrap()
+                .font_family,
+            "Emoji Font"
+        );
+        let mut invalid = loaded.clone();
+        invalid.profiles[0].custom_ranges[0]
+            .subranges
+            .push([0x41, 0x5A]);
+        assert!(save_document(&path, &invalid).is_err());
+        std::fs::write(&path, serde_json::to_vec(&invalid).unwrap()).unwrap();
+        assert!(load_document(&path).is_err());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
 
     fn saves_free_input_names_without_generating_or_overwriting_anm2() {
         let root = temporary_path("free-input");

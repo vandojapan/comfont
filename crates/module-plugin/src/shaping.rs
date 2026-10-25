@@ -7,11 +7,13 @@ use icu_properties::{CodePointMapData, props::BidiClass};
 use std::{collections::HashMap, ffi::c_void, ops::Range, sync::Mutex};
 use windows::{
     Win32::{
-        Foundation::{E_INVALIDARG, E_NOTIMPL, RECT},
+        Foundation::{DWRITE_E_NOCOLOR, E_INVALIDARG, E_NOTIMPL, RECT},
         Graphics::DirectWrite::*,
     },
-    core::{BOOL, ComObject, HSTRING, IUnknown, Interface, Ref, Result, implement},
+    core::{BOOL, ComObject, HSTRING, IUnknown, IUnknownImpl, Interface, Ref, Result, implement},
 };
+#[path = "color_glyphs.rs"]
+pub(crate) mod color_glyphs;
 
 const MAX_IMAGE_SIDE: i32 = 8192;
 const MAX_IMAGE_PIXELS: usize = 16_777_216;
@@ -119,6 +121,8 @@ pub(crate) struct LayoutOptions {
     pub disable_ligatures: bool,
     pub force_ligatures: bool,
     pub antialias: AntialiasMethod,
+    /// Settings preview can composite COLR/CPAL and SVG glyphs.
+    pub color_glyphs: bool,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum AntialiasMethod {
@@ -162,6 +166,7 @@ pub(crate) struct ShapedBitmap {
     pub guides: Vec<Guide>,
     #[cfg(test)]
     pub runs: Vec<RunInfo>,
+    pub svg_layers: usize,
 }
 #[cfg(test)]
 #[derive(Debug)]
@@ -234,12 +239,13 @@ fn layout_bounds(
 }
 
 fn glyph_guides(
-    factory: &IDWriteFactory,
+    painter: &GlyphPainter,
     run: &DWRITE_GLYPH_RUN,
     mut transform: DWRITE_MATRIX,
     mode: DWRITE_MEASURING_MODE,
     baseline: f32,
     cell: RECT,
+    foreground: u32,
 ) -> Result<Vec<Guide>> {
     let mut guides = Vec::with_capacity(run.glyphCount as usize);
     let rtl = run.bidiLevel & 1 != 0;
@@ -259,18 +265,8 @@ fn glyph_guides(
         let next = transform.dx + if rtl { -advance } else { advance };
         let left = transform.dx.min(next);
         let right = transform.dx.max(next);
-        let analysis = unsafe {
-            factory.CreateGlyphRunAnalysis(
-                &glyph,
-                1.0,
-                Some(&transform),
-                DWRITE_RENDERING_MODE_NATURAL,
-                mode,
-                0.0,
-                0.0,
-            )
-        }?;
-        let bounds = unsafe { analysis.GetAlphaTextureBounds(DWRITE_TEXTURE_CLEARTYPE_3x1) }?;
+        let layers = painter.layers(&glyph, None, transform, mode, foreground)?;
+        let bounds = ink_bounds(&layers);
         guides.push(Guide {
             bounds,
             layout_bounds: RECT {
@@ -287,20 +283,178 @@ fn glyph_guides(
     Ok(guides)
 }
 
+struct InkLayer {
+    analysis: Option<IDWriteGlyphRunAnalysis>,
+    bgra: Vec<u8>,
+    bounds: RECT,
+    color: u32,
+    opacity: u8,
+}
+struct GlyphPainter {
+    factory: IDWriteFactory,
+    antialias: AntialiasMethod,
+    color_glyphs: bool,
+    svg_renderer: Mutex<Option<color_glyphs::SvgGlyphRenderer>>,
+}
+impl GlyphPainter {
+    fn analyze(
+        &self,
+        run: &DWRITE_GLYPH_RUN,
+        transform: DWRITE_MATRIX,
+        mode: DWRITE_MEASURING_MODE,
+        color: u32,
+        opacity: u8,
+    ) -> Result<InkLayer> {
+        let analysis = unsafe {
+            self.factory.CreateGlyphRunAnalysis(
+                run,
+                1.0,
+                Some(&transform),
+                self.antialias.rendering_mode(),
+                mode,
+                0.0,
+                0.0,
+            )
+        }?;
+        let bounds = unsafe { analysis.GetAlphaTextureBounds(self.antialias.texture_type()) }?;
+        if [bounds.left, bounds.top, bounds.right, bounds.bottom]
+            .iter()
+            .any(|v| v.abs_diff(0) > MAX_IMAGE_SIDE as u32)
+        {
+            return Err(E_INVALIDARG.into());
+        }
+        Ok(InkLayer {
+            analysis: Some(analysis),
+            bgra: Vec::new(),
+            bounds,
+            color,
+            opacity,
+        })
+    }
+    fn layers(
+        &self,
+        run: &DWRITE_GLYPH_RUN,
+        description: Option<*const DWRITE_GLYPH_RUN_DESCRIPTION>,
+        transform: DWRITE_MATRIX,
+        mode: DWRITE_MEASURING_MODE,
+        foreground: u32,
+    ) -> Result<Vec<InkLayer>> {
+        if self.color_glyphs {
+            let factory: IDWriteFactory4 = self.factory.cast()?;
+            // Enumerate in local coordinates; apply the same scale and baseline
+            // transform to each returned layer, including its own origin.
+            match unsafe {
+                factory.TranslateColorGlyphRun(
+                    Default::default(),
+                    run,
+                    description,
+                    DWRITE_GLYPH_IMAGE_FORMATS_TRUETYPE
+                        | DWRITE_GLYPH_IMAGE_FORMATS_CFF
+                        | DWRITE_GLYPH_IMAGE_FORMATS_COLR
+                        | DWRITE_GLYPH_IMAGE_FORMATS_SVG,
+                    mode,
+                    Some(&transform),
+                    0,
+                )
+            } {
+                Ok(enumerator) => {
+                    let mut layers = Vec::new();
+                    while unsafe { enumerator.MoveNext() }?.as_bool() {
+                        let translated =
+                            unsafe { enumerator.GetCurrentRun()?.as_ref() }.ok_or(E_INVALIDARG)?;
+                        let layer = &translated.Base;
+                        let mut layer_transform = transform;
+                        layer_transform.dx += layer.baselineOriginX * transform.m11
+                            + layer.baselineOriginY * transform.m21;
+                        layer_transform.dy += layer.baselineOriginX * transform.m12
+                            + layer.baselineOriginY * transform.m22;
+                        let (color, opacity) =
+                            palette_color(layer.paletteIndex, layer.runColor, foreground);
+                        if translated.glyphImageFormat == DWRITE_GLYPH_IMAGE_FORMATS_SVG {
+                            let mut renderer = self
+                                .svg_renderer
+                                .lock()
+                                .map_err(|_| windows::core::Error::from(E_INVALIDARG))?;
+                            if renderer.is_none() {
+                                *renderer = Some(color_glyphs::SvgGlyphRenderer::new()?);
+                            }
+                            let transform = windows_numerics::Matrix3x2 {
+                                M11: layer_transform.m11,
+                                M12: layer_transform.m12,
+                                M21: layer_transform.m21,
+                                M22: layer_transform.m22,
+                                M31: layer_transform.dx,
+                                M32: layer_transform.dy,
+                            };
+                            let (bounds, bgra) = renderer.as_mut().unwrap().draw(
+                                &layer.glyphRun,
+                                transform,
+                                translated.measuringMode,
+                                foreground,
+                                self.antialias,
+                            )?;
+                            layers.push(InkLayer {
+                                analysis: None,
+                                bgra,
+                                bounds,
+                                color: foreground,
+                                opacity: 255,
+                            });
+                        } else {
+                            layers.push(self.analyze(
+                                &layer.glyphRun,
+                                layer_transform,
+                                translated.measuringMode,
+                                color,
+                                opacity,
+                            )?);
+                        }
+                    }
+                    return Ok(layers);
+                }
+                // A color font may also contain ordinary monochrome glyphs.
+                Err(error) if error.code() == DWRITE_E_NOCOLOR => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(vec![self.analyze(run, transform, mode, foreground, 255)?])
+    }
+}
+fn palette_color(index: u16, color: DWRITE_COLOR_F, foreground: u32) -> (u32, u8) {
+    if index == 0xffff {
+        return (foreground, 255);
+    }
+    let channel = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u32;
+    (
+        (channel(color.r) << 16) | (channel(color.g) << 8) | channel(color.b),
+        channel(color.a) as u8,
+    )
+}
+fn ink_bounds(layers: &[InkLayer]) -> RECT {
+    layers
+        .iter()
+        .map(|layer| layer.bounds)
+        .filter(|r| r.right > r.left && r.bottom > r.top)
+        .reduce(|a, b| RECT {
+            left: a.left.min(b.left),
+            top: a.top.min(b.top),
+            right: a.right.max(b.right),
+            bottom: a.bottom.max(b.bottom),
+        })
+        .unwrap_or_default()
+}
 struct InkRun {
-    analysis: IDWriteGlyphRunAnalysis,
+    layers: Vec<InkLayer>,
     guide: Guide,
     glyph_guides: Vec<Guide>,
-    color: u32,
     #[cfg(test)]
     info: RunInfo,
 }
 #[implement(IDWriteTextRenderer)]
 struct Renderer {
-    factory: IDWriteFactory,
+    painter: GlyphPainter,
     ink: Mutex<Vec<InkRun>>,
     glyph_guides: bool,
-    antialias: AntialiasMethod,
 }
 impl IDWritePixelSnapping_Impl for Renderer_Impl {
     fn IsPixelSnappingDisabled(&self, _: *const c_void) -> Result<BOOL> {
@@ -333,9 +487,9 @@ impl IDWriteTextRenderer_Impl for Renderer_Impl {
         if run.glyphCount == 0 {
             return Ok(());
         }
-        // This BGRA path paints outline glyphs. Keep the host image for color
-        // bitmap/SVG/COLR fonts rather than silently discard their palettes.
-        if let Some(face) = run.fontFace.as_ref()
+        // The full-object output path still leaves color fonts to the host.
+        if !self.painter.color_glyphs
+            && let Some(face) = run.fontFace.as_ref()
             && let Ok(color_face) = face.cast::<IDWriteFontFace2>()
             && unsafe { color_face.IsColorFont() }.as_bool()
         {
@@ -376,24 +530,10 @@ impl IDWriteTextRenderer_Impl for Renderer_Impl {
             dy: baseline,
             ..Default::default()
         };
-        let analysis = unsafe {
-            self.factory.CreateGlyphRunAnalysis(
-                run,
-                1.0,
-                Some(&transform),
-                self.antialias.rendering_mode(),
-                mode,
-                0.0,
-                0.0,
-            )
-        }?;
-        let bounds = unsafe { analysis.GetAlphaTextureBounds(self.antialias.texture_type()) }?;
-        if [bounds.left, bounds.top, bounds.right, bounds.bottom]
-            .iter()
-            .any(|v| v.abs_diff(0) > 8192)
-        {
-            return Err(E_INVALIDARG.into());
-        }
+        let layers = self
+            .painter
+            .layers(run, Some(description), transform, mode, paint.color)?;
+        let bounds = ink_bounds(&layers);
         let (left, right) = if run.bidiLevel & 1 == 0 {
             (x, x + advance)
         } else {
@@ -401,7 +541,15 @@ impl IDWriteTextRenderer_Impl for Renderer_Impl {
         };
         let layout_bounds = layout_bounds(run, paint.vertical, baseline, left, right)?;
         let glyph_guides = if self.glyph_guides {
-            glyph_guides(&self.factory, run, transform, mode, baseline, layout_bounds)?
+            glyph_guides(
+                &self.painter,
+                run,
+                transform,
+                mode,
+                baseline,
+                layout_bounds,
+                paint.color,
+            )?
         } else {
             Vec::new()
         };
@@ -440,7 +588,7 @@ impl IDWriteTextRenderer_Impl for Renderer_Impl {
             .lock()
             .map_err(|_| windows::core::Error::from(E_INVALIDARG))?
             .push(InkRun {
-                analysis,
+                layers,
                 guide: Guide {
                     bounds,
                     layout_bounds,
@@ -449,7 +597,6 @@ impl IDWriteTextRenderer_Impl for Renderer_Impl {
                     right,
                 },
                 glyph_guides,
-                color: paint.color,
                 #[cfg(test)]
                 info,
             });
@@ -477,15 +624,25 @@ impl IDWriteTextRenderer_Impl for Renderer_Impl {
     }
     fn DrawInlineObject(
         &self,
-        _: *const c_void,
-        _: f32,
-        _: f32,
-        _: Ref<IDWriteInlineObject>,
-        _: BOOL,
-        _: BOOL,
-        _: Ref<IUnknown>,
+        context: *const c_void,
+        x: f32,
+        y: f32,
+        object: Ref<IDWriteInlineObject>,
+        sideways: BOOL,
+        rtl: BOOL,
+        effect: Ref<IUnknown>,
     ) -> Result<()> {
-        Err(E_NOTIMPL.into())
+        unsafe {
+            object.ok()?.Draw(
+                Some(context),
+                &self.to_interface::<IDWriteTextRenderer>(),
+                x,
+                y,
+                sideways.as_bool(),
+                rtl.as_bool(),
+                effect.ok()?,
+            )
+        }
     }
 }
 fn paragraph_ranges(text: &[u16]) -> Vec<Range<usize>> {
@@ -550,6 +707,7 @@ struct ResolvedFont {
     font: IDWriteFont,
     family: HSTRING,
     collection: IDWriteFontCollection,
+    keycaps: Option<[u16; 12]>,
 }
 fn shaped_layout(
     fonts: &mut dyn Fonts,
@@ -679,12 +837,18 @@ fn shaped_layout(
             if !resolved.contains_key(&style.family) {
                 let font = fonts.get(&style.family)?;
                 let (family, collection) = family_name(&font).map_err(|e| e.to_string())?;
+                let keycaps = if options.color_glyphs {
+                    crate::keycap::svg_glyphs(&font)
+                } else {
+                    None
+                };
                 resolved.insert(
                     style.family.clone(),
                     ResolvedFont {
                         font,
                         family,
                         collection,
+                        keycaps,
                     },
                 );
             }
@@ -750,6 +914,34 @@ fn shaped_layout(
                     .SetDrawingEffect(&effect, native_range)
                     .map_err(|e| e.to_string())?;
             }
+            if let Some(glyphs) = font.keycaps {
+                use unicode_segmentation::UnicodeSegmentation;
+                let source =
+                    String::from_utf16(&text.utf16[start..end]).map_err(|e| e.to_string())?;
+                let mut position = native_range.startPosition;
+                for cluster in source.graphemes(true) {
+                    let length = cluster.encode_utf16().count() as u32;
+                    if let Some(index) = crate::keycap::index(cluster)
+                        && glyphs[index] != 0
+                    {
+                        let object =
+                            crate::keycap::inline(&font.font, glyphs[index], cluster, style)
+                                .map_err(|e| e.to_string())?;
+                        unsafe {
+                            layout
+                                .SetInlineObject(
+                                    &object,
+                                    DWRITE_TEXT_RANGE {
+                                        startPosition: position,
+                                        length,
+                                    },
+                                )
+                                .map_err(|e| e.to_string())?;
+                        }
+                    }
+                    position += length;
+                }
+            }
         }
         let mut tm = DWRITE_TEXT_METRICS::default();
         unsafe {
@@ -772,10 +964,14 @@ fn shaped_layout(
     }
     let width = options.wrap_width.unwrap_or(max_width.max(1.0));
     let renderer = ComObject::new(Renderer {
-        factory: factory.clone(),
+        painter: GlyphPainter {
+            factory: factory.clone(),
+            antialias: options.antialias,
+            color_glyphs: options.color_glyphs,
+            svg_renderer: Mutex::new(None),
+        },
         ink: Mutex::new(Vec::new()),
         glyph_guides: options.glyph_guides,
-        antialias: options.antialias,
     });
     let interface = renderer.to_interface::<IDWriteTextRenderer>();
     for (layout, rtl, line) in layouts {
@@ -833,36 +1029,62 @@ fn shaped_layout(
     let mut guides = Vec::new();
     #[cfg(test)]
     let mut runs = Vec::new();
+    let mut svg_layers = 0;
     for run in ink {
-        let bounds = run.guide.bounds;
-        let gw = (bounds.right - bounds.left).max(0) as usize;
-        let gh = (bounds.bottom - bounds.top).max(0) as usize;
-        if gw != 0 && gh != 0 {
-            let channels = options.antialias.channels();
-            let mut alpha = vec![0u8; gw * gh * channels];
-            unsafe {
-                run.analysis
-                    .CreateAlphaTexture(options.antialias.texture_type(), &bounds, &mut alpha)
-                    .map_err(|e| e.to_string())?;
-            }
-            for y in 0..gh {
-                for x in 0..gw {
-                    let source = (y * gw + x) * channels;
-                    let a = if channels == 1 {
-                        alpha[source]
-                    } else {
-                        ((u32::from(alpha[source])
-                            + u32::from(alpha[source + 1])
-                            + u32::from(alpha[source + 2]))
-                            / 3) as u8
-                    };
-                    let dx = bounds.left - left + x as i32;
-                    let dy = bounds.top - top + y as i32;
-                    blend(
-                        &mut bitmap.bgra[((dy * width + dx) * 4) as usize..][..4],
-                        run.color,
-                        a,
-                    );
+        svg_layers += run
+            .layers
+            .iter()
+            .filter(|layer| layer.analysis.is_none())
+            .count();
+        for layer in &run.layers {
+            let bounds = layer.bounds;
+            let gw = (bounds.right - bounds.left).max(0) as usize;
+            let gh = (bounds.bottom - bounds.top).max(0) as usize;
+            if gw != 0 && gh != 0 {
+                let channels = options.antialias.channels();
+                let mut alpha = Vec::new();
+                if let Some(analysis) = &layer.analysis {
+                    alpha.resize(gw * gh * channels, 0);
+                    unsafe {
+                        analysis
+                            .CreateAlphaTexture(
+                                options.antialias.texture_type(),
+                                &bounds,
+                                &mut alpha,
+                            )
+                            .map_err(|e| e.to_string())?;
+                    }
+                }
+                for y in 0..gh {
+                    for x in 0..gw {
+                        let (color, a) = if layer.analysis.is_none() {
+                            let pixel = &layer.bgra[(y * gw + x) * 4..][..4];
+                            (
+                                u32::from(pixel[0])
+                                    | (u32::from(pixel[1]) << 8)
+                                    | (u32::from(pixel[2]) << 16),
+                                pixel[3],
+                            )
+                        } else {
+                            let source = (y * gw + x) * channels;
+                            let a = if channels == 1 {
+                                alpha[source]
+                            } else {
+                                ((u32::from(alpha[source])
+                                    + u32::from(alpha[source + 1])
+                                    + u32::from(alpha[source + 2]))
+                                    / 3) as u8
+                            };
+                            (layer.color, a)
+                        };
+                        let dx = bounds.left - left + x as i32;
+                        let dy = bounds.top - top + y as i32;
+                        blend(
+                            &mut bitmap.bgra[((dy * width + dx) * 4) as usize..][..4],
+                            color,
+                            ((u32::from(a) * u32::from(layer.opacity) + 127) / 255) as u8,
+                        );
+                    }
                 }
             }
         }
@@ -894,6 +1116,7 @@ fn shaped_layout(
         guides,
         #[cfg(test)]
         runs,
+        svg_layers,
     })
 }
 pub(crate) fn rasterize(
@@ -1028,6 +1251,7 @@ mod tests {
             disable_ligatures: false,
             force_ligatures: false,
             antialias: AntialiasMethod::Natural,
+            color_glyphs: false,
         }
     }
     fn draw(fonts: &mut TestFonts, text: &str, style: TextStyle) -> ShapedBitmap {
@@ -1059,6 +1283,387 @@ mod tests {
                     .all(|o| o.advanceOffset.is_finite() && o.ascenderOffset.is_finite())
             );
         }
+    }
+    #[test]
+    fn keycaps_rasterize_as_complete_color_graphemes() {
+        let mut fonts = TestFonts::new();
+        for base in "0123456789#*".chars() {
+            for sample in [format!("{base}\u{FE0F}\u{20E3}"), format!("{base}\u{20E3}")] {
+                for horizontal in [1.0, 2.0] {
+                    let mut adjusted = style("Segoe UI Emoji");
+                    adjusted.horizontal = horizontal;
+                    let image =
+                        crate::raster::glyph_with_style(&mut fonts, &sample, &adjusted).unwrap();
+                    assert!(image.advance > 0.0);
+                    assert!(
+                        image
+                            .bgra
+                            .chunks_exact(4)
+                            .any(|p| p[3] > 128 && p[0].abs_diff(p[2]) > 40),
+                        "{sample}: no color"
+                    );
+                    assert!(
+                        image.advance < 48.0 * horizontal * 1.5,
+                        "{sample}: split glyph advances"
+                    );
+                }
+            }
+        }
+        crate::emoji_bypass::verify_keycap_order(&mut fonts);
+    }
+
+    #[test]
+    fn preview_color_emoji_retains_palette_and_mixed_text() {
+        let mut fonts = TestFonts::new();
+        let mut plan = StyledText::default();
+        plan.push("ABC ", style("Segoe UI"));
+        plan.push("😀❤️👍🏽👩‍💻", style("Segoe UI Emoji"));
+        let image = rasterize(
+            &mut fonts,
+            &plan,
+            &LayoutOptions {
+                color_glyphs: true,
+                ..options()
+            },
+        )
+        .unwrap();
+        check_shape(&image, "mixed color emoji");
+        assert!(
+            image
+                .bitmap
+                .bgra
+                .chunks_exact(4)
+                .any(|p| p[3] > 128 && p[0].abs_diff(p[2]) > 40),
+            "color palette was lost"
+        );
+    }
+    #[test]
+    fn preview_color_fallback_and_scaled_guides_cover_all_painted_pixels() {
+        let mut fonts = TestFonts::new();
+        for family in ["Segoe UI Emoji", "Yu Gothic UI"] {
+            let mut plan = StyledText::default();
+            let mut adjusted = style(family);
+            adjusted.horizontal = 1.25;
+            adjusted.vertical = 0.75;
+            adjusted.baseline_shift = -12.0;
+            plan.push("ABC 😀❤️👍🏽👩‍💻", adjusted);
+            let settings = LayoutOptions {
+                color_glyphs: true,
+                ..options()
+            };
+            let plain = rasterize(&mut fonts, &plan, &settings).unwrap();
+            let guided = rasterize(
+                &mut fonts,
+                &plan,
+                &LayoutOptions {
+                    glyph_guides: true,
+                    ..settings
+                },
+            )
+            .unwrap();
+            check_shape(&guided, family);
+            assert_eq!(
+                (plain.bitmap.width, plain.bitmap.height),
+                (guided.bitmap.width, guided.bitmap.height)
+            );
+            let differences: Vec<_> = plain
+                .bitmap
+                .bgra
+                .chunks_exact(4)
+                .zip(guided.bitmap.bgra.chunks_exact(4))
+                .enumerate()
+                .filter(|(_, (a, b))| a != b)
+                .take(5)
+                .map(|(i, (a, b))| (i, a, b))
+                .collect();
+            assert!(
+                differences.is_empty(),
+                "guides changed pixels: {family}: {differences:?}"
+            );
+            assert!(
+                guided
+                    .bitmap
+                    .bgra
+                    .chunks_exact(4)
+                    .any(|p| p[3] > 128 && p[0].abs_diff(p[2]) > 40),
+                "color fallback failed: {family}"
+            );
+            for (index, pixel) in guided.bitmap.bgra.chunks_exact(4).enumerate() {
+                if pixel[3] == 0 {
+                    continue;
+                }
+                let x = index as i32 % guided.bitmap.width;
+                let y = index as i32 / guided.bitmap.width;
+                assert!(
+                    guided.guides.iter().any(|g| x >= g.bounds.left
+                        && x < g.bounds.right
+                        && y >= g.bounds.top
+                        && y < g.bounds.bottom),
+                    "{family}: uncovered color pixel {x},{y}"
+                );
+            }
+        }
+    }
+    #[test]
+    #[ignore = "Requires the separately installed Twitter Color Emoji SVG-in-OpenType font"]
+    fn preview_twitter_svg_color_and_guides() {
+        let path = std::env::var_os("COMFONT_TWITTER_EMOJI_FONT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap())
+                    .join("Microsoft/Windows/Fonts/TwitterColorEmoji-SVGinOT.ttf")
+            });
+        assert!(
+            path.is_file(),
+            "Twitter Color Emoji font missing: {}",
+            path.display()
+        );
+        let mut fonts = TestFonts::private_file(&path);
+        crate::emoji_bypass::verify_sample_order(&mut fonts);
+        verify_twitter_keycaps(&mut fonts);
+        for sample in ["😀", "❤️", "☀️", "👍🏽", "👩‍💻", "🇯🇵", "1️⃣", "🔟"]
+        {
+            // The standalone aux2 uses this same one-grapheme API. Its em size
+            // controls vector rasterization, not a resampling of preview pixels.
+            {
+                let mut previous = (0, 0);
+                for size in [32.0, 96.0, 192.0] {
+                    let image = crate::raster::glyph_with_fonts(
+                        &mut fonts,
+                        sample,
+                        "Twitter Color Emoji",
+                        size,
+                    )
+                    .unwrap();
+                    assert!(image.width > previous.0 && image.height > previous.1);
+                    assert!(
+                        image.advance > 0.0 && image.origin_x.is_finite() && image.baseline > 0.0
+                    );
+                    assert!(
+                        image
+                            .bgra
+                            .chunks_exact(4)
+                            .any(|p| p[3] > 128 && p[0].abs_diff(p[2]) > 40)
+                    );
+                    previous = (image.width, image.height);
+                }
+            }
+            let mut plan = StyledText::default();
+            plan.push("ABC ", style("Segoe UI"));
+            let mut adjusted = style("Twitter Color Emoji");
+            adjusted.horizontal = 1.25;
+            adjusted.vertical = 0.75;
+            adjusted.baseline_shift = -12.0;
+            plan.push(sample, adjusted);
+            let settings = LayoutOptions {
+                color_glyphs: true,
+                ..options()
+            };
+            let plain = rasterize(&mut fonts, &plan, &settings)
+                .unwrap_or_else(|error| panic!("{sample}: {error}"));
+            let guided = rasterize(
+                &mut fonts,
+                &plan,
+                &LayoutOptions {
+                    glyph_guides: true,
+                    ..settings
+                },
+            )
+            .unwrap();
+            check_shape(&guided, sample);
+            assert!(
+                guided.svg_layers > 0,
+                "{sample}: native SVG glyph was not used"
+            );
+            assert!(
+                guided
+                    .bitmap
+                    .bgra
+                    .chunks_exact(4)
+                    .any(|p| p[3] > 128 && p[0].abs_diff(p[2]) > 40),
+                "{sample}: SVG color was replaced by an outline"
+            );
+            assert_eq!(
+                (plain.bitmap.width, plain.bitmap.height),
+                (guided.bitmap.width, guided.bitmap.height)
+            );
+            assert!(
+                plain.bitmap.bgra == guided.bitmap.bgra,
+                "{sample}: guides changed the SVG raster"
+            );
+            for (index, pixel) in guided.bitmap.bgra.chunks_exact(4).enumerate() {
+                if pixel[3] == 0 {
+                    continue;
+                }
+                let x = index as i32 % guided.bitmap.width;
+                let y = index as i32 / guided.bitmap.width;
+                assert!(
+                    guided.guides.iter().any(|g| x >= g.bounds.left
+                        && x < g.bounds.right
+                        && y >= g.bounds.top
+                        && y < g.bounds.bottom),
+                    "{sample}: SVG pixel outside glyph bounds: {x},{y}"
+                );
+            }
+        }
+    }
+
+    fn verify_twitter_keycaps(fonts: &mut TestFonts) {
+        use compositefont_core::{CompositeFontProfile, FontAdjustment, UNICODE_PRESETS};
+        let font = fonts.get("Twitter Color Emoji").unwrap();
+        let ids = crate::keycap::svg_glyphs(&font).expect("Orphan SVG keycap map missing");
+        // The font has complete artwork despite omitting every ASCII base.
+        assert!(!unsafe { font.HasCharacter('1' as u32) }.unwrap().as_bool());
+        assert!(crate::keycap::svg_glyphs(&fonts.get("Segoe UI Emoji").unwrap()).is_none());
+        let mut fingerprints = std::collections::HashSet::new();
+        for (i, base) in crate::keycap::BASES.iter().enumerate() {
+            let full = format!("{}\u{fe0f}\u{20e3}", char::from(*base));
+            let short = format!("{}\u{20e3}", char::from(*base));
+            for (horizontal, vertical) in [(1.0, 1.0), (1.01, 1.0), (2.0, 1.0), (1.25, 0.75)] {
+                let mut adjusted = style("Twitter Color Emoji");
+                adjusted.horizontal = horizontal;
+                adjusted.vertical = vertical;
+                let a = crate::raster::glyph_with_style(fonts, &full, &adjusted).unwrap();
+                let b = crate::raster::glyph_with_style(fonts, &short, &adjusted).unwrap();
+                assert_eq!(a.svg_layers, 1, "{full}");
+                assert_eq!(a.bgra, b.bgra, "{full}: VS16 omission changed artwork");
+                assert!(
+                    a.bgra
+                        .chunks_exact(4)
+                        .any(|p| p[3] > 128 && p[0].abs_diff(p[2]) > 40)
+                );
+                let mut plan = StyledText::default();
+                plan.push(&full, adjusted.clone());
+                let image = rasterize(
+                    fonts,
+                    &plan,
+                    &LayoutOptions {
+                        color_glyphs: true,
+                        ..options()
+                    },
+                )
+                .unwrap();
+                assert_eq!(image.runs.len(), 1);
+                assert_eq!(image.runs[0].glyphs, [ids[i]], "{full}: wrong SVG glyph");
+                let face = unsafe { font.CreateFontFace() }.unwrap();
+                let mut fm = DWRITE_FONT_METRICS::default();
+                let mut gm = DWRITE_GLYPH_METRICS::default();
+                unsafe {
+                    face.GetMetrics(&mut fm);
+                    face.GetDesignGlyphMetrics(&ids[i], 1, &mut gm, false)
+                        .unwrap();
+                }
+                let expected = gm.advanceWidth as f32 / f32::from(fm.designUnitsPerEm)
+                    * adjusted.size
+                    * horizontal;
+                assert!(
+                    (a.advance - expected).abs() < 0.01,
+                    "{full}: altered advance"
+                );
+                if horizontal == 1.0 {
+                    assert!(fingerprints.insert(a.bgra));
+                }
+            }
+        }
+        let mut profile = CompositeFontProfile::neutral_default();
+        profile.custom_ranges.push(
+            UNICODE_PRESETS
+                .iter()
+                .find(|p| p.block_name == "Emoji")
+                .unwrap()
+                .to_range(FontAdjustment {
+                    font_family: "Twitter Color Emoji".into(),
+                    horizontal_scale_ratio: 2.0,
+                    vertical_scale_ratio: 0.75,
+                    ..FontAdjustment::neutral()
+                }),
+        );
+        profile.digit.font_family = "Segoe UI Emoji".into();
+        profile.symbol.font_family = "Segoe UI Emoji".into();
+        let source = "0123456789 #* 0️⃣1️⃣2️⃣3️⃣4️⃣5️⃣6️⃣7️⃣8️⃣9️⃣#️⃣*️⃣🔟";
+        let request = crate::render::RenderRequest {
+            text: source.into(),
+            profile: Some(profile.clone()),
+            font: "Yu Gothic UI".into(),
+            size: 32.0,
+            spacing: 0.0,
+            line_spacing: 0.0,
+            color: "ffffff".into(),
+            align: 0,
+            bold: false,
+            italic: false,
+            disable_ligatures: false,
+        };
+        let direct = crate::render::prepare(&request, source, &mut Coverage(fonts))
+            .unwrap()
+            .unwrap();
+        let decorated = crate::decorate_plain_text_with_coverage(
+            source,
+            &profile,
+            Some(32.0),
+            Some(0.0),
+            &mut Coverage(fonts),
+        );
+        let native_request = crate::render::RenderRequest {
+            text: decorated.clone(),
+            profile: None,
+            ..request
+        };
+        let generated =
+            crate::render::prepare_native(&native_request, &decorated, &mut Coverage(fonts))
+                .unwrap()
+                .unwrap();
+        let mut pos = 0;
+        use unicode_segmentation::UnicodeSegmentation;
+        for cluster in source.graphemes(true) {
+            let style = &direct
+                .ranges
+                .iter()
+                .find(|r| r.utf16.contains(&pos))
+                .unwrap()
+                .style;
+            if crate::keycap::is_keycap(cluster) {
+                assert_eq!(style.family, "Twitter Color Emoji");
+                assert_eq!((style.horizontal, style.vertical), (2.0, 0.75));
+            } else if cluster != " " {
+                assert_eq!(style.family, "Segoe UI Emoji");
+                assert_eq!(style.horizontal, 1.0);
+            }
+            pos += cluster.encode_utf16().count();
+        }
+        let opts = LayoutOptions {
+            color_glyphs: true,
+            ..options()
+        };
+        // Inline keycaps must retain per-cluster tracking regardless of their
+        // UTF-16 length.
+        let mut pairs = Vec::new();
+        for tracking in [0.0, 7.0] {
+            let mut pair = StyledText::default();
+            let mut adjusted = style("Twitter Color Emoji");
+            adjusted.tracking = tracking;
+            pair.push("1️⃣2️⃣", adjusted);
+            pairs.push(rasterize(fonts, &pair, &opts).unwrap());
+        }
+        assert_eq!(pairs[0].runs.len(), 2);
+        assert_eq!(pairs[1].runs.len(), 2);
+        assert!(
+            (pairs[1].runs[1].x - pairs[0].runs[1].x - 7.0).abs() < 0.01,
+            "Inline keycap tracking was lost or applied per code unit"
+        );
+        let a = rasterize(fonts, &direct, &opts).unwrap();
+        let b = rasterize(fonts, &generated, &opts).unwrap();
+        assert_eq!(a.svg_layers, 13);
+        assert_eq!(
+            a.bitmap.bgra, b.bitmap.bgra,
+            "Preview and native decoration differ"
+        );
+        crate::emoji_bypass::verify_twitter_keycap_order(
+            &decorated,
+            &native_request,
+            &generated,
+            fonts,
+        );
     }
     #[test]
     fn native_text_shaping_supports_indic_marks_and_conjuncts() {
@@ -1515,6 +2120,11 @@ mod tests {
     }
     struct Coverage<'a>(&'a mut TestFonts);
     impl crate::font_coverage::GlyphCoverage for Coverage<'_> {
+        fn has_keycap_svg(&mut self, family: &str, cluster: &str) -> Option<bool> {
+            let index = crate::keycap::index(cluster)?;
+            let font = self.0.get(family).ok()?;
+            crate::keycap::svg_glyphs(&font).map(|ids| ids[index] != 0)
+        }
         fn has_glyph(&mut self, family: &str, character: char) -> Option<bool> {
             unsafe {
                 self.0
@@ -1534,6 +2144,7 @@ mod tests {
             name: "Oriya".into(),
             start: 0x0b00,
             end: 0x0b7f,
+            subranges: Vec::new(),
             adjustment: FontAdjustment {
                 font_family: "Noto Sans Oriya".into(),
                 size_ratio: 1.25,

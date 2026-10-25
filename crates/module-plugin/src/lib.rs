@@ -1,8 +1,11 @@
 mod control_text;
+mod emoji_bypass;
 mod font_coverage;
 mod generated_text;
+mod keycap;
 mod native_filter;
 pub mod preview;
+pub mod raster;
 mod render;
 mod shaping;
 
@@ -25,9 +28,16 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-const API_VERSION: i32 = 16;
+const API_VERSION: i32 = 18;
 
 pub use native_filter::NativeTextFilter;
+
+/// Register the private layout-marker font used by SVG emoji bypass.
+pub fn register_emoji_marker_font(
+    host: &mut aviutl2::generic::HostAppHandle,
+) -> aviutl2::AnyResult<()> {
+    emoji_bypass::register_font(host)
+}
 
 /// Unknown or malformed controls exclude the entire source from explicit
 /// decoration; do not partially decorate it.
@@ -290,15 +300,9 @@ impl ReloadableProfiles {
             return text.to_owned();
         };
         let profile = profile.clone();
-        if let Some(index) = self.decorated_cache.iter().position(|entry| {
-            entry.source == text
-                && entry.profile == profile
-                && entry.size == base_font_size
-                && entry.spacing == base_char_spacing
-        }) {
-            let entry = self.decorated_cache.remove(index).unwrap();
-            let result = entry.result.clone();
-            self.decorated_cache.push_back(entry);
+        if let Some(result) =
+            self.cached_decoration(text, &profile, base_font_size, base_char_spacing)
+        {
             return result;
         }
         let result = decorate_plain_text_with_coverage(
@@ -308,13 +312,39 @@ impl ReloadableProfiles {
             base_char_spacing,
             coverage,
         );
-        self.decorated_cache.push_back(DecoratedTextCacheEntry {
+        self.cache_decoration(DecoratedTextCacheEntry {
             source: text.to_owned(),
             profile,
             size: base_font_size,
             spacing: base_char_spacing,
             result: result.clone(),
         });
+        result
+    }
+
+    fn cached_decoration(
+        &mut self,
+        text: &str,
+        profile: &CompositeFontProfile,
+        base_font_size: Option<f64>,
+        base_char_spacing: Option<f64>,
+    ) -> Option<String> {
+        if let Some(index) = self.decorated_cache.iter().position(|entry| {
+            entry.source == text
+                && entry.profile == *profile
+                && entry.size == base_font_size
+                && entry.spacing == base_char_spacing
+        }) {
+            let entry = self.decorated_cache.remove(index).unwrap();
+            let result = entry.result.clone();
+            self.decorated_cache.push_back(entry);
+            return Some(result);
+        }
+        None
+    }
+
+    fn cache_decoration(&mut self, entry: DecoratedTextCacheEntry) {
+        self.decorated_cache.push_back(entry);
         while self.decorated_cache.len() > 16
             || self
                 .decorated_cache
@@ -325,7 +355,6 @@ impl ReloadableProfiles {
         {
             self.decorated_cache.pop_front();
         }
-        result
     }
 
     fn decorate_layout(
@@ -613,12 +642,11 @@ fn resolved_adjustment_for_cluster(
     format: &TextFormatState,
     coverage: &mut dyn GlyphCoverage,
 ) -> FontAdjustment {
-    let character = cluster.chars().next().expect("nonempty grapheme");
     if format.profile_font_allowed() {
         resolved_adjustment_for_cluster_with_index(profile, cluster, coverage).0
     } else {
         let mut adjustment = profile
-            .adjustment_for_character(character)
+            .adjustment_for_cluster(cluster)
             .cloned()
             .unwrap_or_else(FontAdjustment::neutral);
         adjustment.font_family.clear();
@@ -897,39 +925,69 @@ fn resolved_adjustment_for_cluster_with_index(
     cluster: &str,
     coverage: &mut dyn GlyphCoverage,
 ) -> (FontAdjustment, usize) {
-    use icu_properties::{CodePointSetData, props::DefaultIgnorableCodePoint};
     let character = cluster.chars().next().expect("nonempty grapheme");
-    let ignorable = CodePointSetData::new::<DefaultIgnorableCodePoint>();
-    let normalized = icu_normalizer::ComposingNormalizer::new_nfc().normalize(cluster);
-    let class = classify_character(character);
-
-    let mut last = (FontAdjustment::neutral(), 0);
-    let mut first_unknown = None;
-    let candidates = if let Some((_, range)) = profile.matching_range(character) {
+    for range in profile
+        .custom_ranges
+        .iter()
+        .filter(|range| range.matches_cluster(cluster))
+    {
         let mut primary = range.adjustment.clone();
         let legacy = std::mem::take(&mut primary.fallback_font_families);
         let mut candidates = vec![primary.clone()];
         candidates.extend(legacy.into_iter().map(|family| {
-            let mut a = primary.clone();
-            a.font_family = family;
-            a
+            let mut adjustment = primary.clone();
+            adjustment.font_family = family;
+            adjustment
         }));
-        candidates
-    } else if profile.class_enabled(class) {
+        // Unlike an ordinary scalar range, a keycap only claims the entire
+        // grapheme when its font covers it. Otherwise try lower-priority ranges.
+        let keycap = range.is_emoji_preset() && compositefont_core::is_emoji_keycap(cluster);
+        if let Some(selected) = resolve_adjustment_candidates(candidates, cluster, coverage, keycap)
+        {
+            return selected;
+        }
+    }
+    let class = classify_character(character);
+    let candidates = if profile.class_enabled(class) {
         adjustments_for_class(profile, class)
     } else {
         Vec::new()
     };
+    resolve_adjustment_candidates(candidates, cluster, coverage, false)
+        .unwrap_or_else(|| (FontAdjustment::neutral(), 0))
+}
+
+fn resolve_adjustment_candidates(
+    candidates: Vec<FontAdjustment>,
+    cluster: &str,
+    coverage: &mut dyn GlyphCoverage,
+    fall_through_on_missing: bool,
+) -> Option<(FontAdjustment, usize)> {
+    use icu_properties::{CodePointSetData, props::DefaultIgnorableCodePoint};
+    let ignorable = CodePointSetData::new::<DefaultIgnorableCodePoint>();
+    let normalized = icu_normalizer::ComposingNormalizer::new_nfc().normalize(cluster);
+
+    let mut last = (FontAdjustment::neutral(), 0);
+    let mut first_unknown = None;
+    // With no alternative, coverage cannot change the chosen adjustment.
+    // Avoid synchronously loading the font merely to ask about every glyph;
+    // the native text renderer resolves that font when it actually draws.
+    if candidates.len() == 1 && !fall_through_on_missing {
+        return Some((candidates.into_iter().next().unwrap(), 0));
+    }
     for (index, adjustment) in candidates.into_iter().enumerate() {
         if adjustment.effective_font_family().is_empty() {
-            if adjustment.effective_disable_ligatures() {
-                return (adjustment, index);
-            }
-            last = (adjustment, index);
-            continue;
+            // An empty or disabled font override inherits the active host font.
+            // Keep this row's independent metrics instead of trying later rows.
+            return Some((adjustment, index));
         }
         // A font must cover the whole grapheme, including dependent vowels
         // and marks. Joiners, selectors and bidi controls have no own glyph.
+        if compositefont_core::is_emoji_keycap(cluster)
+            && coverage.has_keycap_svg(adjustment.effective_font_family(), cluster) == Some(true)
+        {
+            return Some((adjustment, index));
+        }
         let mut result = Some(true);
         for c in normalized
             .chars()
@@ -946,13 +1004,13 @@ fn resolved_adjustment_for_cluster_with_index(
         }
         last = (adjustment, index);
         match result {
-            Some(true) => return last,
+            Some(true) => return Some(last),
             Some(false) => {}
             None if first_unknown.is_none() => first_unknown = Some(last.clone()),
             None => {}
         }
     }
-    first_unknown.unwrap_or(last)
+    first_unknown.or_else(|| (!fall_through_on_missing).then_some(last))
 }
 
 fn adjustments_for_class(
@@ -1485,14 +1543,14 @@ impl IntoScriptModuleReturnValue for ScriptResolvedFont {
 #[aviutl2::plugin(ScriptModule)]
 pub struct CompositeFontModule {
     profiles: Mutex<ReloadableProfiles>,
-    generated_text: Mutex<generated_text::GeneratedTextCache>,
+    generated_text: &'static Mutex<generated_text::GeneratedTextCache>,
 }
 
 impl ScriptModule for CompositeFontModule {
     fn new(_info: aviutl2::AviUtl2Info) -> aviutl2::AnyResult<Self> {
         Ok(Self {
             profiles: Mutex::new(ReloadableProfiles::new(profile_path())),
-            generated_text: Mutex::new(generated_text::GeneratedTextCache::default()),
+            generated_text: generated_text::shared_cache(),
         })
     }
 
@@ -1768,6 +1826,7 @@ mod tests {
     #[derive(Default)]
     struct TestCoverage {
         values: HashMap<(String, char), bool>,
+        keycap_svgs: HashMap<String, bool>,
         vertical_metrics: HashMap<String, FontVerticalMetrics>,
         monospaced_fonts: HashMap<String, bool>,
         glyph_top_extents: HashMap<(String, char), f64>,
@@ -1777,6 +1836,10 @@ mod tests {
     }
 
     impl GlyphCoverage for TestCoverage {
+        fn has_keycap_svg(&mut self, font_family: &str, cluster: &str) -> Option<bool> {
+            crate::keycap::index(cluster)?;
+            self.keycap_svgs.get(font_family).copied()
+        }
         fn has_glyph(&mut self, font_family: &str, character: char) -> Option<bool> {
             self.glyph_queries.push((font_family.to_owned(), character));
             self.values
@@ -1918,6 +1981,24 @@ mod tests {
         assert_eq!(selected.font_family, "Pr6");
         assert_eq!(selected.size_ratio, 1.05);
         assert_eq!(index, 1);
+    }
+
+    #[test]
+    fn single_font_candidate_does_not_load_fonts_for_redundant_coverage_checks() {
+        let mut profile = CompositeFontProfile::neutral_default();
+        profile.western.font_family = "Only Font".into();
+        let mut coverage = TestCoverage::default();
+        assert_eq!(
+            decorate_plain_text_with_coverage(
+                "ABC",
+                &profile,
+                Some(40.0),
+                Some(0.0),
+                &mut coverage
+            ),
+            "<@Only Font>ABC<@>"
+        );
+        assert!(coverage.glyph_queries.is_empty());
     }
 
     #[test]
@@ -2482,6 +2563,56 @@ mod tests {
     }
 
     #[test]
+    fn unchanged_font_applies_metrics_before_later_font_candidates() {
+        for disabled in [false, true] {
+            let mut profile = CompositeFontProfile::neutral_default();
+            profile.western = adjustment(
+                if disabled { "Saved Font" } else { "" },
+                1.5,
+                0.25,
+                0.12,
+                0.8,
+                1.2,
+            );
+            profile.western.font_family_enabled = !disabled;
+            profile.western_fallbacks = vec![FontAdjustment {
+                font_family: "Fallback".into(),
+                ..FontAdjustment::neutral()
+            }];
+            let mut coverage = TestCoverage::default();
+            coverage.values.insert(("Fallback".into(), 'A'), true);
+            assert_eq!(
+                decorate_plain_text_with_coverage(
+                    "A",
+                    &profile,
+                    Some(100.0),
+                    Some(3.0),
+                    &mut coverage
+                ),
+                "<s*1.5><gw15><tw1.2><th0.8><p+0,-25>A<p><th><tw><gw><s>"
+            );
+            assert!(coverage.glyph_queries.is_empty());
+        }
+    }
+
+    #[test]
+    fn unchanged_font_fallback_keeps_its_own_metrics() {
+        let mut profile = CompositeFontProfile::neutral_default();
+        profile.western.font_family = "Missing Glyph".into();
+        profile.western_fallbacks = vec![
+            adjustment("", 1.5, 0.0, 0.0, 1.0, 1.0),
+            adjustment("Later", 2.0, 0.0, 0.0, 1.0, 1.0),
+        ];
+        let mut coverage = TestCoverage::default();
+        coverage.values.insert(("Missing Glyph".into(), 'A'), false);
+        coverage.values.insert(("Later".into(), 'A'), true);
+        let (selected, index) = resolved_adjustment_with_index(&profile, 'A', &mut coverage);
+        assert_eq!(index, 1);
+        assert_eq!(selected.font_family, "");
+        assert_eq!(selected.size_ratio, 1.5);
+    }
+
+    #[test]
     fn layout_metrics_use_the_active_input_font() {
         let mut profile = CompositeFontProfile::neutral_default();
         profile.western.font_family = "Profile Font".to_owned();
@@ -2804,6 +2935,10 @@ mod tests {
 
     fn decorate_result_is_cached_and_updates_for_source_profile_and_base_metrics() {
         let mut profile = decoration_profile();
+        profile.western_fallbacks.push(FontAdjustment {
+            font_family: "Fallback".into(),
+            ..profile.western.clone()
+        });
         let mut profiles = ReloadableProfiles {
             store: ProfileStore::from_profiles([profile.clone()]),
             path: temporary_profile_path(),
@@ -2932,6 +3067,7 @@ mod tests {
                 name: "Latin".to_owned(),
                 start: 0x41,
                 end: 0x5A,
+                subranges: Vec::new(),
                 adjustment: custom,
             });
         let decorated = decorate_plain_text("ABC漢", &profile, Some(64.0), Some(0.0));
@@ -2964,6 +3100,7 @@ mod tests {
                 name: preset.name.to_owned(),
                 start: preset.start,
                 end: preset.end,
+                subranges: Vec::new(),
                 adjustment: adjustment("Noto Sans Oriya", 1.2, 0.0, 0.0, 1.0, 1.0),
             });
         let mut coverage = TestCoverage::default();
@@ -3001,6 +3138,183 @@ mod tests {
         );
         assert!((visible.format.effective_font_size().unwrap() - 38.4).abs() < 1e-9);
     }
+
+    #[test]
+    fn emoji_preset_keeps_flags_keycaps_and_zwj_sequences_in_one_font() {
+        let preset = compositefont_core::UNICODE_PRESETS
+            .iter()
+            .find(|preset| preset.block_name == "Emoji")
+            .unwrap();
+        let mut profile = CompositeFontProfile::neutral_default();
+        profile.custom_ranges.push(preset.to_range(adjustment(
+            "Emoji Font",
+            1.0,
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+        )));
+        let source = "❤️☀️🇯🇵1️⃣👨‍👩‍👧‍👦👍🏽\u{1FAFA}";
+        assert_eq!(
+            decorate_plain_text(source, &profile, Some(32.0), Some(0.0)),
+            format!("<@Emoji Font>{source}<@>")
+        );
+        assert_eq!(
+            decorate_plain_text("漢あA", &profile, Some(32.0), Some(0.0)),
+            "漢あA"
+        );
+    }
+
+    fn keycap_profile() -> CompositeFontProfile {
+        let mut profile = CompositeFontProfile::neutral_default();
+        profile.custom_ranges.push(
+            compositefont_core::UNICODE_PRESETS
+                .iter()
+                .find(|p| p.block_name == "Emoji")
+                .unwrap()
+                .to_range(adjustment("Emoji", 2.0, 0.1, 0.2, 0.75, 1.5)),
+        );
+        profile
+            .custom_ranges
+            .push(compositefont_core::UnicodeRange {
+                name: "Numbers".into(),
+                start: 0x30,
+                end: 0x39,
+                subranges: Vec::new(),
+                adjustment: adjustment("Numbers", 1.1, 0.0, 0.0, 1.0, 1.0),
+            });
+        profile.digit = adjustment("Digit class", 1.2, 0.0, 0.0, 1.0, 1.0);
+        profile
+    }
+
+    #[test]
+    fn bare_numbers_and_symbols_do_not_inherit_emoji_font_or_metrics() {
+        let profile = keycap_profile();
+        let mut coverage = TestCoverage::default();
+        for cluster in ["1", "1\u{FE0F}", "1\u{301}", "9"] {
+            let (selected, _) =
+                resolved_adjustment_for_cluster_with_index(&profile, cluster, &mut coverage);
+            assert_eq!(selected, profile.custom_ranges[1].adjustment);
+        }
+        for cluster in ["#", "*"] {
+            assert_eq!(
+                resolved_adjustment_for_cluster_with_index(&profile, cluster, &mut coverage).0,
+                profile.symbol
+            );
+        }
+        assert!(coverage.glyph_queries.is_empty());
+    }
+
+    #[test]
+    fn keycap_checks_whole_cluster_before_selecting_emoji_or_lower_digit_rules() {
+        for cluster in ["1️⃣", "1\u{20E3}"] {
+            let mut profile = keycap_profile();
+            let mut coverage = TestCoverage::default();
+            coverage.values.insert(("Emoji".into(), '1'), true);
+            coverage.values.insert(("Emoji".into(), '\u{20E3}'), true);
+            let runs = resolve_text_runs(cluster, &profile, &mut coverage);
+            assert_eq!(runs.len(), 1);
+            assert_eq!(runs[0].range.utf8, 0..cluster.len());
+            assert_eq!(runs[0].range.utf16, 0..cluster.encode_utf16().count());
+            assert_eq!(
+                runs[0].adjustment.as_ref().unwrap(),
+                &profile.custom_ranges[0].adjustment
+            );
+            assert!(!coverage.glyph_queries.iter().any(|(_, c)| *c == '\u{FE0F}'));
+
+            // A font with the digit but no combining keycap must release the
+            // entire grapheme, including all of its independent metrics.
+            coverage.values.insert(("Emoji".into(), '\u{20E3}'), false);
+            let runs = resolve_text_runs(cluster, &profile, &mut coverage);
+            assert_eq!(runs.len(), 1);
+            assert_eq!(
+                runs[0].adjustment.as_ref().unwrap(),
+                &profile.custom_ranges[1].adjustment
+            );
+            profile.custom_ranges.pop();
+            assert_eq!(
+                resolved_adjustment_for_cluster_with_index(&profile, cluster, &mut coverage).0,
+                profile.digit
+            );
+            profile
+                .disabled_classes
+                .push(compositefont_core::CharacterClass::Digit);
+            assert_eq!(
+                resolved_adjustment_for_cluster_with_index(&profile, cluster, &mut coverage).0,
+                FontAdjustment::neutral()
+            );
+        }
+    }
+
+    #[test]
+    fn keycap_tries_emoji_fallback_before_lower_digit_range() {
+        let mut profile = keycap_profile();
+        profile.custom_ranges[0].adjustment.fallback_font_families = vec!["Emoji fallback".into()];
+        let mut coverage = TestCoverage::default();
+        coverage.values.insert(("Emoji".into(), '1'), false);
+        for c in ['1', '\u{20E3}'] {
+            coverage.values.insert(("Emoji fallback".into(), c), true);
+        }
+        let (selected, index) =
+            resolved_adjustment_for_cluster_with_index(&profile, "1️⃣", &mut coverage);
+        assert_eq!(selected.font_family, "Emoji fallback");
+        assert_eq!(selected.size_ratio, 2.0);
+        assert_eq!(index, 1);
+    }
+
+    #[test]
+    fn orphan_keycap_svg_keeps_emoji_metrics_and_missing_svg_falls_through() {
+        let profile = keycap_profile();
+        let mut coverage = TestCoverage::default();
+        coverage.values.insert(("Emoji".into(), '1'), false);
+        coverage.values.insert(("Emoji".into(), '\u{20E3}'), false);
+        coverage.keycap_svgs.insert("Emoji".into(), true);
+        for cluster in ["1️⃣", "1\u{20E3}"] {
+            assert_eq!(
+                resolved_adjustment_for_cluster_with_index(&profile, cluster, &mut coverage).0,
+                profile.custom_ranges[0].adjustment
+            );
+        }
+        assert_eq!(
+            resolved_adjustment_for_cluster_with_index(&profile, "1", &mut coverage).0,
+            profile.custom_ranges[1].adjustment
+        );
+        coverage.keycap_svgs.insert("Emoji".into(), false);
+        assert_eq!(
+            resolved_adjustment_for_cluster_with_index(&profile, "1️⃣", &mut coverage).0,
+            profile.custom_ranges[1].adjustment
+        );
+    }
+
+    #[test]
+    fn explicit_input_font_keeps_keycap_metrics_but_not_emoji_metrics_on_bare_digits() {
+        let profile = keycap_profile();
+        let source = "<@Input>1 1️⃣<@>";
+        let parsed = parse_control_text(source, ControlTextDefaults::default()).unwrap();
+        let mut coverage = TestCoverage::default();
+        let runs = resolve_parsed_text_runs(source, &parsed, &profile, &mut coverage);
+        let digit = runs
+            .iter()
+            .find(|run| &source[run.range.utf8.clone()] == "1")
+            .unwrap()
+            .adjustment
+            .as_ref()
+            .unwrap();
+        let keycap = runs
+            .iter()
+            .find(|run| &source[run.range.utf8.clone()] == "1️⃣")
+            .unwrap()
+            .adjustment
+            .as_ref()
+            .unwrap();
+        assert_eq!(digit.size_ratio, 1.1);
+        assert_eq!(digit.horizontal_scale_ratio, 1.0);
+        assert_eq!(keycap.size_ratio, 2.0);
+        assert!(digit.effective_font_family().is_empty());
+        assert!(keycap.effective_font_family().is_empty());
+        assert!(coverage.glyph_queries.is_empty());
+    }
+
     #[test]
     fn decoration_assigns_one_font_to_the_whole_grapheme_and_preserves_source_ranges() {
         let mut profile = CompositeFontProfile::neutral_default();
@@ -3011,6 +3325,7 @@ mod tests {
                 name: "Marks".into(),
                 start: 0x0300,
                 end: 0x036f,
+                subranges: Vec::new(),
                 adjustment: adjustment("Marks", 1.0, 0.0, 0.0, 1.0, 1.0),
             });
         let text = "e\u{301}𠮷";
@@ -3078,6 +3393,7 @@ mod tests {
                 name: "Virama".into(),
                 start: 0x094d,
                 end: 0x094d,
+                subranges: Vec::new(),
                 adjustment: adjustment("WrongFont", 1.0, 0.0, 0.0, 1.0, 1.0),
             });
         let source = "क्ष";

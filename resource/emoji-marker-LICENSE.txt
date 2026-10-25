@@ -1,0 +1,8 @@
+Comfont Emoji Marker v2
+
+This font was generated from the original rectangle and empty glyph definitions
+in tools/generate-emoji-marker-font.py. No third-party font outlines are used.
+
+To the extent possible under law, the authors have waived all copyright and
+related or neighboring rights to this marker font (CC0 1.0 Universal).
+https://creativecommons.org/publicdomain/zero/1.0/

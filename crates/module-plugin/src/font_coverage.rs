@@ -25,6 +25,11 @@ pub trait GlyphCoverage {
     /// `None` means that the font or its coverage could not be queried.
     fn has_glyph(&mut self, font_family: &str, character: char) -> Option<bool>;
 
+    /// A known SVG keycap may exist without a Unicode cmap/GSUB route.
+    fn has_keycap_svg(&mut self, _font_family: &str, _cluster: &str) -> Option<bool> {
+        None
+    }
+
     /// Returns normalized DirectWrite vertical metrics for the resolved font.
     fn vertical_metrics(&mut self, _font_family: &str) -> Option<FontVerticalMetrics> {
         None
@@ -53,6 +58,7 @@ pub trait GlyphCoverage {
 pub struct FontManagerGlyphCoverage<'section> {
     section: &'section ReadSection,
     results: HashMap<(String, char), Option<bool>>,
+    keycap_svgs: HashMap<String, Option<[u16; 12]>>,
     vertical_metrics: HashMap<String, Option<FontVerticalMetrics>>,
     monospaced_fonts: HashMap<String, Option<bool>>,
     glyph_layout_metrics: HashMap<(String, char), Option<GlyphLayoutMetrics>>,
@@ -63,6 +69,7 @@ impl<'section> FontManagerGlyphCoverage<'section> {
         Self {
             section,
             results: HashMap::new(),
+            keycap_svgs: HashMap::new(),
             vertical_metrics: HashMap::new(),
             monospaced_fonts: HashMap::new(),
             glyph_layout_metrics: HashMap::new(),
@@ -158,6 +165,20 @@ impl<'section> FontManagerGlyphCoverage<'section> {
 }
 
 impl GlyphCoverage for FontManagerGlyphCoverage<'_> {
+    fn has_keycap_svg(&mut self, font_family: &str, cluster: &str) -> Option<bool> {
+        let index = crate::keycap::index(cluster)?;
+        let glyphs = self
+            .keycap_svgs
+            .entry(font_family.to_owned())
+            .or_insert_with(|| {
+                let raw = self.section.get_font(font_family).ok()?;
+                // Borrow the host-owned face, including private FontManager fonts.
+                let font = unsafe { IDWriteFont::from_raw_borrowed(&raw) }?;
+                crate::keycap::svg_glyphs(font)
+            });
+        glyphs.map(|ids| ids[index] != 0)
+    }
+
     fn has_glyph(&mut self, font_family: &str, character: char) -> Option<bool> {
         let key = (font_family.to_owned(), character);
         if let Some(result) = self.results.get(&key) {

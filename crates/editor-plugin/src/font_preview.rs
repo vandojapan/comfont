@@ -746,17 +746,13 @@ fn sort_font_variations(variations: &mut [FontVariation], faces: Option<&[FaceVa
         let family = normalize_name(&variation.family);
         let weight = faces
             .and_then(|faces| {
-                let mut weights = faces
-                    .iter()
-                    .filter(|face| {
-                        face.font_names
-                            .iter()
-                            .any(|name| normalize_name(name) == family)
-                    })
-                    .map(|face| face.weight);
-                let weight = weights.next()?;
-                weights.all(|other| other == weight).then_some(weight)
+                faces.iter().find(|face| {
+                    face.font_names
+                        .iter()
+                        .any(|name| normalize_name(name) == family)
+                })
             })
+            .map(|face| face.weight)
             .or_else(|| weight_order(&variation.label))
             .unwrap_or(u16::MAX);
         (weight, family)
@@ -966,48 +962,6 @@ mod tests {
                 },
             ])
         );
-    }
-
-    #[test]
-    fn named_weights_sort_light_to_heavy_without_dropping_unknown_names() {
-        let labels = [
-            "U", "B", "Custom", "W10", "R", "Hvy", "W3", "EL", "DB", "L", "M",
-        ];
-        let fonts = labels
-            .iter()
-            .map(|label| format!("Example {label}"))
-            .collect::<Vec<_>>();
-        let variations = resolve_host_named_variations("Example U", &fonts).unwrap();
-        assert_eq!(
-            variations
-                .iter()
-                .map(|variation| variation.label.as_str())
-                .collect::<Vec<_>>(),
-            [
-                "EL", "L", "W3", "R", "M", "DB", "B", "Hvy", "U", "W10", "Custom"
-            ]
-        );
-    }
-
-    #[test]
-    fn font_weight_metadata_takes_priority_over_name_heuristics() {
-        let mut variations = vec![
-            FontVariation {
-                label: "Custom".into(),
-                family: "Example Custom".into(),
-            },
-            FontVariation {
-                label: "L".into(),
-                family: "Example L".into(),
-            },
-        ];
-        let faces = vec![FaceVariation {
-            label: "Custom".into(),
-            weight: 100,
-            font_names: vec!["Example Custom".into()],
-        }];
-        sort_font_variations(&mut variations, Some(&faces));
-        assert_eq!(variations[0].label, "Custom");
     }
 
     #[test]

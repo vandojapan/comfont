@@ -46,6 +46,7 @@ fn preview_input_fonts(definitions: &mut egui::FontDefinitions) {
         "msjh.ttc",
         "msyh.ttc",
         "seguisym.ttf",
+        "seguiemj.ttf",
         "seguihis.ttf",
     ] {
         if let Ok(bytes) = std::fs::read(system_fonts.join(file)) {
@@ -187,7 +188,7 @@ fn preset_row(ui: &mut egui::Ui, index: usize, selected: usize) -> egui::Respons
         [ui.available_width(), 28.0],
         left_selectable(
             index == selected,
-            &format!("{}  U+{:04X}–{:04X}", preset.name, preset.start, preset.end),
+            &format!("{}  {}", preset.name, preset.range_label()),
         ),
     )
 }
@@ -239,6 +240,20 @@ fn unicode_preset_list(
         }
         chosen
     })
+}
+
+fn subrange_details(ui: &mut egui::Ui, subranges: &[[u32; 2]]) {
+    ui.label(format!("{}個の範囲をまとめて指定します。", subranges.len()));
+    ui.small("絵文字と構成文字（数字・#・*・結合用文字など）が対象です。");
+    ui.collapsing("対象コードポイントを表示", |ui| {
+        egui::ScrollArea::vertical()
+            .max_height(156.0)
+            .show(ui, |ui| {
+                for &[start, end] in subranges {
+                    ui.monospace(format!("U+{start:04X}–U+{end:04X}"));
+                }
+            });
+    });
 }
 
 const FONT_FIELD_HEIGHT: f32 = 32.0;
@@ -546,6 +561,59 @@ fn watch_host_window(
             }
         })
 }
+
+struct HostWindowWatcherGuard {
+    stop: Arc<AtomicBool>,
+    handle: Arc<Mutex<Option<JoinHandle<()>>>>,
+}
+
+impl HostWindowWatcherGuard {
+    fn stop_and_join(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        let mut handle = self
+            .handle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(handle) = handle.take() {
+            let _ = handle.join();
+        }
+    }
+
+    fn restart(&mut self) {
+        self.stop_and_join();
+        self.stop.store(false, Ordering::Release);
+    }
+}
+
+impl Drop for HostWindowWatcherGuard {
+    fn drop(&mut self) {
+        self.stop_and_join();
+    }
+}
+
+enum EframeRunFailure {
+    Initialization(String),
+    Panic(String),
+}
+
+fn run_eframe(
+    options: eframe::NativeOptions,
+    app_creator: eframe::AppCreator<'static>,
+) -> Result<(), EframeRunFailure> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        eframe::run_native("合成フォント — β", options, app_creator)
+    }))
+    .map_err(|payload| {
+        let message = payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| payload.downcast_ref::<&str>().copied())
+            .unwrap_or("描画バックエンドの初期化中に予期しないエラーが発生しました");
+        EframeRunFailure::Panic(format!("egui の実行中に panic が発生しました: {message}"))
+    })?
+    .map_err(|error| EframeRunFailure::Initialization(error.to_string()))
+}
+
 impl EditorApp {
     fn explain(&mut self, response: egui::Response, text: &str) -> egui::Response {
         if response.contains_pointer() {
@@ -589,7 +657,11 @@ impl EditorApp {
         // Validate all editor fields before committing any changes.
         let mut candidate = self.model.clone();
         candidate.rename_selected_profile(&self.profile_name)?;
-        if self.selection.rows.len() == 1 && candidate.selected_range().is_some() {
+        if self.selection.rows.len() == 1
+            && candidate
+                .selected_range()
+                .is_some_and(|range| range.subranges.is_empty())
+        {
             candidate.update_selected_range(
                 parse_codepoint(&self.start)?,
                 parse_codepoint(&self.end)?,
@@ -1046,7 +1118,14 @@ impl EditorApp {
                 });
             });
         });
-        if !multiple && self.model.selected_range().is_some() {
+        if !multiple
+            && self
+                .model
+                .selected_range()
+                .is_some_and(|range| !range.subranges.is_empty())
+        {
+            subrange_details(ui, &self.model.selected_range().unwrap().subranges);
+        } else if !multiple && self.model.selected_range().is_some() {
             ui.horizontal(|ui| {
                 self.explain(
                     ui.label("開始 U+"),
@@ -1077,14 +1156,14 @@ impl EditorApp {
             let font_enabled = visibility_toggle(ui, &mut self.enabled[0], "フォント");
             self.enabled_changed[0] |= font_enabled.changed();
             self.explain(font_enabled, "白い目：フォント名を上書き。灰色の斜線付きの目：上書きしません。入力値は保存します。");
-            self.explain(ui.add_sized([48.0, 32.0], egui::Label::new("フォント")), "フォント名は直接入力、または右端の一覧から選択できます。空欄はフォントを変更しません。");
+            self.explain(ui.add_sized([48.0, 32.0], egui::Label::new("フォント")), "フォント名は直接入力、または右端の一覧から選択できます。空欄は元のフォントを引き継ぎ、他の有効なパラメータを適用します。");
             ui.add_enabled_ui(self.enabled[0], |ui| {
                 ui.scope(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     let width = (ui.available_width() - 140.0).clamp(120.0, 420.0);
                     let input = font_name_input(ui, &mut self.font, width);
                     self.changed_fields[0] |= input.changed();
-                    self.explain(input.clone(), "フォント名は直接入力、または右端の一覧から選択できます。空欄はフォントを変更しません。");
+                    self.explain(input.clone(), "フォント名は直接入力、または右端の一覧から選択できます。空欄は元のフォントを引き継ぎ、他の有効なパラメータを適用します。");
                     let button = ui.add_sized([36.0, 32.0], egui::Button::new(icon_label('', "")));
                     self.explain(button.clone(), "フォント一覧を開きます。検索して選択できます。");
                     self.font_picker.button(&button, input.rect.union(button.rect), input.rect.height());
@@ -1234,23 +1313,36 @@ impl EditorApp {
                 }
             });
             ui.add_space(12.0);
-            ui.radio_value(&mut draft.custom, true, "カスタム");
+            if ui
+                .radio_value(&mut draft.custom, true, "カスタム")
+                .clicked()
+                && let Some(&[start, end]) = UNICODE_PRESETS[draft.preset].subranges.first()
+            {
+                draft.start = format!("{start:04X}");
+                draft.end = format!("{end:04X}");
+            }
             ui.add_enabled_ui(draft.custom, |ui| {
                 ui.horizontal(|ui| {
                     ui.label("名前");
                     ui.text_edit_singleline(&mut draft.name);
                 });
             });
-            ui.horizontal(|ui| {
-                ui.label("開始 U+");
-                let a = ui.add(egui::TextEdit::singleline(&mut draft.start).desired_width(90.0));
-                ui.label("終了 U+");
-                let b = ui.add(egui::TextEdit::singleline(&mut draft.end).desired_width(90.0));
-                if a.changed() || b.changed() {
-                    draft.custom = true;
-                }
-            });
-            ui.small("両端を含む16進数の範囲です。プリセットの値も手動編集できます。");
+            let preset = &UNICODE_PRESETS[draft.preset];
+            if !draft.custom && !preset.subranges.is_empty() {
+                subrange_details(ui, preset.subranges);
+            } else {
+                ui.horizontal(|ui| {
+                    ui.label("開始 U+");
+                    let a =
+                        ui.add(egui::TextEdit::singleline(&mut draft.start).desired_width(90.0));
+                    ui.label("終了 U+");
+                    let b = ui.add(egui::TextEdit::singleline(&mut draft.end).desired_width(90.0));
+                    if a.changed() || b.changed() {
+                        draft.custom = true;
+                    }
+                });
+                ui.small("両端を含む16進数の範囲です。プリセットの値も手動編集できます。");
+            }
             if !draft.error.is_empty() {
                 ui.colored_label(egui::Color32::LIGHT_RED, &draft.error);
             }
@@ -1284,10 +1376,14 @@ impl EditorApp {
                     } else {
                         UNICODE_PRESETS[draft.preset].name
                     };
-                    let result = parse_codepoint(&draft.start).and_then(|start| {
-                        parse_codepoint(&draft.end)
-                            .and_then(|end| self.model.add_range(name.to_owned(), start, end))
-                    });
+                    let result = if draft.custom {
+                        parse_codepoint(&draft.start).and_then(|start| {
+                            parse_codepoint(&draft.end)
+                                .and_then(|end| self.model.add_range(name.to_owned(), start, end))
+                        })
+                    } else {
+                        self.model.add_preset(&UNICODE_PRESETS[draft.preset])
+                    };
                     match result {
                         Ok(()) => {
                             self.reset_selection();
@@ -1433,35 +1529,87 @@ pub fn show_editor(
         hover_help: None,
     };
     app.reset_selection();
+    let app_slot = Arc::new(Mutex::new(Some(app)));
+    let app_started = Arc::new(AtomicBool::new(false));
     let monitor_stop = Arc::new(AtomicBool::new(false));
-    let monitor_stop_for_app = Arc::clone(&monitor_stop);
     let monitor_handle = Arc::new(Mutex::new(None::<JoinHandle<()>>));
-    let monitor_handle_for_app = Arc::clone(&monitor_handle);
+    let mut watcher_guard = HostWindowWatcherGuard {
+        stop: Arc::clone(&monitor_stop),
+        handle: Arc::clone(&monitor_handle),
+    };
     let owner_hwnd = owner.hwnd.get();
     let _dpi_scope = ThreadDpiScope::enter();
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            // eframe 0.33 sets its default icon on GetActiveWindow(), which can
-            // still be the host during startup. The empty icon explicitly disables
-            // AppTitleIconSetter so it never sends WM_SETICON to AviUtl2.
-            .with_icon(egui::IconData::default())
-            .with_inner_size([1280.0, 960.0])
-            .with_min_inner_size([960.0, 720.0]),
-        event_loop_builder: Some(Box::new(|builder| {
-            builder.with_any_thread(true).with_dpi_aware(false);
-        })),
-        run_and_return: true,
-        dithering: false,
-        ..Default::default()
-    };
-    let run_result = eframe::run_native(
-        "合成フォント — β",
-        options,
-        Box::new(move |cc| {
-            let watcher = watch_host_window(owner_hwnd, cc.egui_ctx.clone(), monitor_stop_for_app)?;
-            if let Ok(mut handle) = monitor_handle_for_app.lock() {
-                *handle = Some(watcher);
+    let surface_error_reported = Arc::new(AtomicBool::new(false));
+    let native_options = |renderer, backends| {
+        let mut wgpu_options = eframe::egui_wgpu::WgpuConfiguration::default();
+        if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut wgpu_options.wgpu_setup {
+            setup.instance_descriptor.backends = backends;
+            // The editor is a light workload: prefer an integrated/low-power
+            // adapter when both integrated and discrete GPUs are available.
+            setup.power_preference = wgpu::PowerPreference::LowPower;
+            // Ask for egui's downlevel limits and let each adapter provide its
+            // own texture dimensions instead of requiring an 8192px texture.
+            setup.device_descriptor = Arc::new(|adapter| wgpu::DeviceDescriptor {
+                label: Some("comfont egui device"),
+                required_limits: wgpu::Limits::downlevel_defaults()
+                    .using_resolution(adapter.limits()),
+                ..Default::default()
+            });
+        }
+        let surface_error_reported = Arc::clone(&surface_error_reported);
+        wgpu_options.on_surface_error = Arc::new(move |error| {
+            let message = error.to_string();
+            match error {
+                wgpu::SurfaceError::Outdated => {
+                    eframe::egui_wgpu::SurfaceErrorAction::RecreateSurface
+                }
+                wgpu::SurfaceError::Lost => {
+                    if !surface_error_reported.swap(true, Ordering::AcqRel) {
+                        let _ = aviutl2::logger::write_error_log(&format!(
+                            "Comfont UI wgpu surface was lost; recreating it: {message}"
+                        ));
+                    }
+                    eframe::egui_wgpu::SurfaceErrorAction::RecreateSurface
+                }
+                wgpu::SurfaceError::Timeout => eframe::egui_wgpu::SurfaceErrorAction::SkipFrame,
+                wgpu::SurfaceError::OutOfMemory | wgpu::SurfaceError::Other => {
+                    if !surface_error_reported.swap(true, Ordering::AcqRel) {
+                        let _ = aviutl2::logger::write_error_log(&format!(
+                            "Comfont UI wgpu could not acquire a frame: {message}"
+                        ));
+                    }
+                    eframe::egui_wgpu::SurfaceErrorAction::SkipFrame
+                }
             }
+        });
+        eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default()
+                // eframe 0.33 sets its default icon on GetActiveWindow(), which can
+                // still be the host during startup. The empty icon explicitly disables
+                // AppTitleIconSetter so it never sends WM_SETICON to AviUtl2.
+                .with_icon(egui::IconData::default())
+                .with_inner_size([1280.0, 960.0])
+                .with_min_inner_size([960.0, 720.0]),
+            event_loop_builder: Some(Box::new(|builder| {
+                builder.with_any_thread(true).with_dpi_aware(false);
+            })),
+            renderer,
+            wgpu_options,
+            run_and_return: true,
+            dithering: false,
+            ..Default::default()
+        }
+    };
+    let app_creator = || {
+        let app_slot = Arc::clone(&app_slot);
+        let app_started = Arc::clone(&app_started);
+        let monitor_stop = Arc::clone(&monitor_stop);
+        let monitor_handle = Arc::clone(&monitor_handle);
+        Box::new(move |cc: &eframe::CreationContext<'_>| {
+            let watcher = watch_host_window(owner_hwnd, cc.egui_ctx.clone(), monitor_stop)?;
+            *monitor_handle
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(watcher);
             let mut visuals = egui::Visuals::dark();
             visuals.override_text_color = Some(egui::Color32::from_rgb(224, 228, 234));
             cc.egui_ctx.set_visuals(visuals);
@@ -1529,16 +1677,74 @@ pub fn show_editor(
                 vec!["MaterialMetrics".to_owned()],
             );
             cc.egui_ctx.set_fonts(definitions);
-            Ok(Box::new(app))
-        }),
-    );
-    monitor_stop.store(true, Ordering::Release);
-    if let Ok(mut handle) = monitor_handle.lock()
-        && let Some(handle) = handle.take()
+            let app = app_slot
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+                .ok_or_else(|| std::io::Error::other("Editor application was already created"))?;
+            app_started.store(true, Ordering::Release);
+            Ok(Box::new(app) as Box<dyn eframe::App>)
+        }) as eframe::AppCreator<'static>
+    };
+
+    let mut startup_failures = Vec::new();
+    let mut run_result = None;
+    for (index, (name, renderer, backends)) in [
+        (
+            "wgpu / Direct3D 12",
+            eframe::Renderer::Wgpu,
+            wgpu::Backends::DX12,
+        ),
+        (
+            "wgpu / Vulkan",
+            eframe::Renderer::Wgpu,
+            wgpu::Backends::VULKAN,
+        ),
+        (
+            "egui_glow / OpenGL",
+            eframe::Renderer::Glow,
+            wgpu::Backends::empty(),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
     {
-        let _ = handle.join();
+        let result = run_eframe(native_options(renderer, backends), app_creator());
+        match result {
+            Ok(()) => {
+                run_result = Some(Ok(()));
+                break;
+            }
+            Err(EframeRunFailure::Panic(error)) => {
+                run_result = Some(Err(error));
+                break;
+            }
+            Err(EframeRunFailure::Initialization(error)) if app_started.load(Ordering::Acquire) => {
+                run_result = Some(Err(format!(
+                    "{name} の実行中に描画エラーが発生しました: {error}"
+                )));
+                break;
+            }
+            Err(EframeRunFailure::Initialization(error)) => {
+                startup_failures.push(format!("{name}: {error}"));
+                let _ = aviutl2::logger::write_info_log(&format!(
+                    "Comfont UI renderer startup failed ({name}); trying the next backend: {error}"
+                ));
+                watcher_guard.restart();
+                if index == 2 {
+                    run_result = Some(Err(format!(
+                        "合成フォント設定画面の初期化に失敗しました。試行した描画方式: {}",
+                        startup_failures.join("; ")
+                    )));
+                }
+            }
+        }
     }
-    run_result.map_err(|error| error.to_string())?;
+    run_result
+        .unwrap_or_else(|| Err("合成フォント設定画面の初期化を完了できませんでした".to_owned()))
+        .inspect_err(|error| {
+            let _ = aviutl2::logger::write_error_log(error);
+        })?;
     let document = result
         .lock()
         .map_err(|_| "保存状態を取得できません。")?
