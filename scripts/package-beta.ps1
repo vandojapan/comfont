@@ -3,15 +3,23 @@ $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $projectRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
+$metadataJson = & cargo metadata --no-deps --format-version 1 --offline --locked --manifest-path (Join-Path $projectRoot 'Cargo.toml')
+if ($LASTEXITCODE -ne 0) { throw 'Failed to read workspace package version' }
+$metadata = $metadataJson | ConvertFrom-Json
+$pluginPackage = $metadata.packages | Where-Object { $_.name -eq 'compositefont-editor-plugin' }
+if ($null -eq $pluginPackage) { throw 'Editor plugin package was not found' }
+$version = $pluginPackage.version
+& cargo build -p compositefont-editor-plugin --release --offline --locked --manifest-path (Join-Path $projectRoot 'Cargo.toml')
+if ($LASTEXITCODE -ne 0) { throw 'Release build failed; package was not created' }
 $releaseDir = Join-Path $projectRoot 'release'
 [IO.Directory]::CreateDirectory($releaseDir) | Out-Null
 $variant = if ($PackageSuffix) { 'beta-' + $PackageSuffix } else { 'beta' }
 $flavor = 'release'
 $stageDir = Join-Path $projectRoot ('target/package-' + $variant)
 [IO.Directory]::CreateDirectory($stageDir) | Out-Null
-$ini = '[package]' + [Environment]::NewLine + 'id=vandojapan.comfont' + [Environment]::NewLine + 'name=comfont' + [Environment]::NewLine + 'information=comfont v0.3.2 β' + [Environment]::NewLine + 'uninstallSubFolderFile=0' + [Environment]::NewLine
+$ini = '[package]' + [Environment]::NewLine + 'id=vandojapan.comfont' + [Environment]::NewLine + 'name=comfont' + [Environment]::NewLine + ('information=comfont v' + $version + ' β') + [Environment]::NewLine + 'uninstallSubFolderFile=0' + [Environment]::NewLine
 [IO.File]::WriteAllText((Join-Path $stageDir 'package.ini'), $ini, [Text.UTF8Encoding]::new($false))
-$zipPath = Join-Path $releaseDir ('vandojapan.comfont-v0.3.2-' + $variant + '.au2pkg.zip')
+$zipPath = Join-Path $releaseDir ('vandojapan.comfont-v' + $version + '-' + $variant + '.au2pkg.zip')
 $stream = [IO.File]::Open($zipPath, [IO.FileMode]::Create)
 $zip = [IO.Compression.ZipArchive]::new($stream, [IO.Compression.ZipArchiveMode]::Create)
 try {

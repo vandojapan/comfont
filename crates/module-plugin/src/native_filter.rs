@@ -31,6 +31,7 @@ fn log_once(event: u32, message: &str) {
 #[aviutl2::plugin(FilterPlugin)]
 pub struct NativeTextFilter {
     profiles: Mutex<ReloadableProfiles>,
+    emoji_cache: Mutex<crate::emoji_bypass::Cache>,
     ligature_cache: Mutex<
         VecDeque<(
             render::RenderRequest,
@@ -46,6 +47,7 @@ impl FilterPlugin for NativeTextFilter {
     fn new(_info: aviutl2::AviUtl2Info) -> AnyResult<Self> {
         Ok(Self {
             profiles: Mutex::new(ReloadableProfiles::new(super::profile_path())),
+            emoji_cache: Mutex::new(crate::emoji_bypass::Cache::default()),
             ligature_cache: Mutex::new(VecDeque::new()),
         })
     }
@@ -68,6 +70,7 @@ impl FilterPlugin for NativeTextFilter {
         _config: &[FilterConfigItem],
         video: &mut FilterProcVideo<()>,
     ) -> AnyResult<()> {
+        let started = std::time::Instant::now();
         log_once(0, "renderer entered");
         let object = video.object.handle;
         let section = video.read_section();
@@ -158,6 +161,8 @@ impl FilterPlugin for NativeTextFilter {
             .as_deref()
             .map(parse_antialias)
             .unwrap_or_default();
+        let settings_elapsed = started.elapsed();
+        log_once(22, "object settings read");
         if force_ligatures && self.render_ligatures(video, &params, &source, &profile, antialias) {
             return Ok(());
         }
@@ -165,20 +170,21 @@ impl FilterPlugin for NativeTextFilter {
         let decorated = {
             let section = video.read_section();
             let mut coverage = FontManagerGlyphCoverage::new(section);
-            let Ok(mut profiles) = self.profiles.lock() else {
-                log_once(13, "profile lock was poisoned");
-                return Ok(());
-            };
             super::decorate_host_text(source.clone(), false, |text| {
-                profiles.decorate(
+                decorate_native_text(
+                    &self.profiles,
                     &text,
-                    Some(&profile),
+                    &profile,
                     base_size,
                     base_spacing,
                     &mut coverage,
                 )
             })
         };
+        let decoration_elapsed = started.elapsed();
+        if self.render_svg_emoji(video, &params, &decorated) {
+            return Ok(());
+        }
         if decorated == source || decorated.len() > MAX_TEXT_BYTES {
             log_once(
                 14,
@@ -222,11 +228,131 @@ impl FilterPlugin for NativeTextFilter {
                 log_once(18, &format!("standard text renderer failed: {error}"));
             }
         }
+        let total = started.elapsed();
+        if total >= std::time::Duration::from_millis(100) {
+            log_once(
+                23,
+                &format!(
+                    "slow frame: settings {:.1} ms, decoration {:.1} ms, native text {:.1} ms, total {:.1} ms",
+                    settings_elapsed.as_secs_f64() * 1000.0,
+                    (decoration_elapsed - settings_elapsed).as_secs_f64() * 1000.0,
+                    (total - decoration_elapsed).as_secs_f64() * 1000.0,
+                    total.as_secs_f64() * 1000.0,
+                ),
+            );
+        }
         Ok(())
     }
 }
 
+fn decorate_native_text(
+    shared: &Mutex<ReloadableProfiles>,
+    source: &str,
+    profile_name: &str,
+    size: Option<f64>,
+    spacing: Option<f64>,
+    coverage: &mut dyn super::GlyphCoverage,
+) -> String {
+    let profile = {
+        let Ok(mut profiles) = shared.lock() else {
+            log_once(13, "profile lock was poisoned");
+            return source.to_owned();
+        };
+        profiles.refresh_if_changed();
+        let Ok(profile) = profiles.store.profile(Some(profile_name)) else {
+            return source.to_owned();
+        };
+        let profile = profile.clone();
+        if let Some(result) = profiles.cached_decoration(source, &profile, size, spacing) {
+            return result;
+        }
+        profile
+    };
+    // FontManager calls can enter host code. Never hold our profile/cache lock
+    // while making those calls or serializing other rendering threads behind them.
+    let result =
+        super::decorate_plain_text_with_coverage(source, &profile, size, spacing, coverage);
+    if let Ok(mut profiles) = shared.lock() {
+        profiles.cache_decoration(super::DecoratedTextCacheEntry {
+            source: source.to_owned(),
+            profile,
+            size,
+            spacing,
+            result: result.clone(),
+        });
+    }
+    result
+}
+
 impl NativeTextFilter {
+    fn render_svg_emoji(
+        &self,
+        video: &mut FilterProcVideo<()>,
+        params: &[(String, String)],
+        text: &str,
+    ) -> bool {
+        if [
+            "文字毎に個別オブジェクト",
+            "自動スクロール",
+            "移動座標上に表示",
+        ]
+        .iter()
+        .any(|item| parameter_checked(params, item))
+            || parameter_number(params, "表示速度").unwrap_or_default() != 0.0
+            || parameter_string(params, "文字装飾").is_some_and(|v| v != "標準文字")
+        {
+            return false;
+        }
+        let (Some(font), Some(size), Some(align)) = (
+            parameter_string(params, "フォント"),
+            parameter_number(params, "サイズ"),
+            parameter_string(params, "文字揃え").and_then(|v| text_alignment(&v)),
+        ) else {
+            return false;
+        };
+        let request = render::RenderRequest {
+            text: text.into(),
+            profile: None,
+            font,
+            size,
+            align,
+            spacing: parameter_number(params, "字間").unwrap_or_default(),
+            line_spacing: parameter_number(params, "行間").unwrap_or_default(),
+            color: parameter_string(params, "文字色").unwrap_or_else(|| "ffffff".into()),
+            bold: parameter_checked(params, "B"),
+            italic: parameter_checked(params, "I"),
+            disable_ligatures: false,
+        };
+        let image =
+            match crate::emoji_bypass::render(video, params, text, &request, &self.emoji_cache) {
+                Ok(Some(image)) => image,
+                Ok(None) => return false,
+                Err(error) => {
+                    crate::emoji_bypass::trace(&format!("bypass fallback: {error}"));
+                    log_once(24, &format!("SVG emoji bypass skipped: {error}"));
+                    return false;
+                }
+            };
+        if video
+            .set_image_resource_data(
+                &ImageResource::Object,
+                &image.bitmap.bgra,
+                image.bitmap.width as u32,
+                image.bitmap.height as u32,
+                image.bitmap.width as u32 * 4,
+                InputImageResourcePixelFormat::Bgra,
+            )
+            .is_err()
+        {
+            return false;
+        }
+        video.param.cx += image.cx;
+        video.param.cy += image.cy;
+        log_once(25, "ordered SVG emoji slots composited with native text");
+        crate::emoji_bypass::trace("bypass uploaded successfully");
+        true
+    }
+
     fn render_ligatures(
         &self,
         video: &mut FilterProcVideo<()>,
@@ -283,7 +409,7 @@ impl NativeTextFilter {
             italic: parameter_checked(params, "I"),
             disable_ligatures: false,
         };
-        let bitmap = {
+        let cached = {
             let Ok(mut cache) = self.ligature_cache.lock() else {
                 return false;
             };
@@ -294,18 +420,25 @@ impl NativeTextFilter {
                 let entry = cache.remove(index).expect("cached index exists");
                 let bitmap = Arc::clone(&entry.2);
                 cache.push_back(entry);
-                bitmap
+                Some(bitmap)
             } else {
-                let section = video.read_section();
-                let image = match render::render_ligature_opt_in(section, &request, antialias) {
-                    Ok(Some(image)) => image,
-                    Ok(None) => return false,
-                    Err(error) => {
-                        log_once(19, &format!("ligature renderer failed: {error}"));
-                        return false;
-                    }
-                };
-                let bitmap = Arc::new(image);
+                None
+            }
+        };
+        let bitmap = if let Some(bitmap) = cached {
+            bitmap
+        } else {
+            let section = video.read_section();
+            let image = match render::render_ligature_opt_in(section, &request, antialias) {
+                Ok(Some(image)) => image,
+                Ok(None) => return false,
+                Err(error) => {
+                    log_once(19, &format!("ligature renderer failed: {error}"));
+                    return false;
+                }
+            };
+            let bitmap = Arc::new(image);
+            if let Ok(mut cache) = self.ligature_cache.lock() {
                 cache.push_back((request, antialias, Arc::clone(&bitmap)));
                 while cache.len() > 16
                     || cache
@@ -316,8 +449,8 @@ impl NativeTextFilter {
                 {
                     cache.pop_front();
                 }
-                bitmap
             }
+            bitmap
         };
         let Ok(width) = u32::try_from(bitmap.width) else {
             return false;
@@ -417,7 +550,7 @@ fn parameter_number(params: &[(String, String)], name: &str) -> Option<f64> {
     value.is_finite().then_some(value)
 }
 
-fn encode_alias(value: &str) -> String {
+pub(crate) fn encode_alias(value: &str) -> String {
     let mut encoded = String::with_capacity(value.len());
     for character in value.chars() {
         match character {
@@ -448,5 +581,55 @@ mod antialias_tests {
         );
         assert_eq!(parse_antialias("2.0"), shaping::AntialiasMethod::Aliased);
         assert_eq!(parse_antialias("なし"), shaping::AntialiasMethod::Aliased);
+    }
+
+    #[test]
+    fn host_font_calls_run_without_profile_lock_and_results_are_cached() {
+        struct Coverage<'a> {
+            profiles: &'a Mutex<ReloadableProfiles>,
+            calls: usize,
+        }
+        impl super::super::GlyphCoverage for Coverage<'_> {
+            fn has_glyph(&mut self, _font: &str, _character: char) -> Option<bool> {
+                assert!(
+                    self.profiles.try_lock().is_ok(),
+                    "host call held the profile lock"
+                );
+                self.calls += 1;
+                Some(true)
+            }
+        }
+        let mut profile = compositefont_core::CompositeFontProfile::neutral_default();
+        profile.western.font_family = "First".into();
+        profile
+            .western_fallbacks
+            .push(compositefont_core::FontAdjustment {
+                font_family: "Last".into(),
+                ..compositefont_core::FontAdjustment::neutral()
+            });
+        let mut profiles = ReloadableProfiles::new(std::env::temp_dir().join(format!(
+            "comfont-native-lock-{}-missing.json",
+            std::process::id()
+        )));
+        profiles.store = super::super::ProfileStore::from_profiles(vec![profile]);
+        let profiles = Mutex::new(profiles);
+        let mut coverage = Coverage {
+            profiles: &profiles,
+            calls: 0,
+        };
+        for _ in 0..2 {
+            assert_eq!(
+                decorate_native_text(
+                    &profiles,
+                    "A",
+                    "default",
+                    Some(40.0),
+                    Some(0.0),
+                    &mut coverage
+                ),
+                "<@First>A<@>"
+            );
+        }
+        assert_eq!(coverage.calls, 1);
     }
 }

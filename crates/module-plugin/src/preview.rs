@@ -66,6 +66,7 @@ pub fn render_preview(
     );
     // Per-glyph analyses are needed only for the settings preview guides.
     layout.glyph_guides = bounds_guide;
+    layout.color_glyphs = true;
     let shaped = rasterize(&mut HostFonts::new(section), &plan, &layout)?;
     let mut bitmap = PreviewBitmap {
         width,

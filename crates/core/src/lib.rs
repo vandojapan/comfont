@@ -320,14 +320,17 @@ impl FontAdjustment {
     }
 }
 
-/// Inclusive Unicode range. Endpoints must be scalar values; a range may span
-/// the surrogate gap, which cannot match a Rust char.
+/// Inclusive Unicode range, optionally restricted to disjoint subranges.
+/// Endpoints must be scalar values; a range may span the surrogate gap.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UnicodeRange {
     pub name: String,
     pub start: u32,
     pub end: u32,
+    /// When nonempty, only these inclusive ranges match. start/end are the envelope.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subranges: Vec<[u32; 2]>,
     pub adjustment: FontAdjustment,
 }
 impl UnicodeRange {
@@ -338,31 +341,87 @@ impl UnicodeRange {
         {
             return Err("範囲の開始・終了には U+0000～U+10FFFF のUnicodeスカラー値を昇順で指定してください。".to_owned());
         }
+        if !self.subranges.is_empty()
+            && (self.subranges.first().unwrap()[0] != self.start
+                || self.subranges.last().unwrap()[1] != self.end
+                || self.subranges.iter().any(|&[start, end]| {
+                    char::from_u32(start).is_none() || char::from_u32(end).is_none() || start > end
+                })
+                || self
+                    .subranges
+                    .windows(2)
+                    .any(|pair| pair[0][1] >= pair[1][0]))
+        {
+            return Err("複数範囲は開始・終了の内側で、重複のない昇順のUnicodeスカラー値として指定してください。".to_owned());
+        }
         Ok(())
     }
     pub fn contains(&self, character: char) -> bool {
-        self.validate().is_ok() && (self.start..=self.end).contains(&(character as u32))
+        let codepoint = character as u32;
+        self.validate().is_ok()
+            && (self.start..=self.end).contains(&codepoint)
+            && (self.subranges.is_empty()
+                || self
+                    .subranges
+                    .iter()
+                    .any(|&[start, end]| (start..=end).contains(&codepoint)))
+    }
+    /// Identify saved/copied Emoji presets by their set, independent of the row name.
+    pub fn is_emoji_preset(&self) -> bool {
+        self.subranges == EMOJI_RANGES
+    }
+
+    /// Match a grapheme while retaining the official scalar set in `contains`.
+    pub fn matches_cluster(&self, cluster: &str) -> bool {
+        let Some(character) = cluster.chars().next() else {
+            return false;
+        };
+        self.contains(character)
+            && (!self.is_emoji_preset() || !is_keycap_base(character) || is_emoji_keycap(cluster))
+    }
+
+    pub fn range_label(&self) -> String {
+        range_label(self.start, self.end, &self.subranges)
     }
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct UnicodePreset {
     pub name: &'static str,
-    /// Official Unicode block name, also used for searching.
+    /// Official Unicode block name or English range label, also used for searching.
     pub block_name: &'static str,
     pub start: u32,
     pub end: u32,
     pub frequent: bool,
+    /// Empty for a contiguous block; otherwise the exact inclusive ranges.
+    pub subranges: &'static [[u32; 2]],
 }
 impl UnicodePreset {
-    /// Search Japanese/English names or a code point within this block.
+    pub fn to_range(&self, adjustment: FontAdjustment) -> UnicodeRange {
+        UnicodeRange {
+            name: self.name.to_owned(),
+            start: self.start,
+            end: self.end,
+            subranges: self.subranges.to_vec(),
+            adjustment,
+        }
+    }
+    pub fn range_label(&self) -> String {
+        range_label(self.start, self.end, self.subranges)
+    }
+    /// Search Japanese/English names or a code point within this range.
     pub fn matches(&self, query: &str) -> bool {
         let query = query.trim();
         if query.is_empty() {
             return true;
         }
         if let Ok(codepoint) = parse_codepoint(query) {
-            return (self.start..=self.end).contains(&codepoint);
+            return (self.start..=self.end).contains(&codepoint)
+                && (self.subranges.is_empty()
+                    || self
+                        .subranges
+                        .iter()
+                        .any(|&[start, end]| (start..=end).contains(&codepoint)));
         }
         let names = format!("{} {}", self.name, self.block_name).to_lowercase();
         query
@@ -371,8 +430,34 @@ impl UnicodePreset {
             .all(|word| names.contains(word))
     }
 }
+fn range_label(start: u32, end: u32, subranges: &[[u32; 2]]) -> String {
+    if subranges.is_empty() {
+        format!("U+{start:04X}–U+{end:04X}")
+    } else {
+        format!("{}範囲", subranges.len())
+    }
+}
+mod emoji_ranges;
+pub use emoji_ranges::EMOJI_RANGES;
 mod unicode_presets;
 pub use unicode_presets::UNICODE_PRESETS;
+
+fn is_keycap_base(character: char) -> bool {
+    character.is_ascii_digit() || matches!(character, '#' | '*')
+}
+
+/// Fully- and minimally-qualified emoji keycaps, kept as a single grapheme.
+pub fn is_emoji_keycap(cluster: &str) -> bool {
+    let mut characters = cluster.chars();
+    if !characters.next().is_some_and(is_keycap_base) {
+        return false;
+    }
+    let mark = match characters.next() {
+        Some('\u{FE0F}') => characters.next(),
+        next => next,
+    };
+    mark == Some('\u{20E3}') && characters.next().is_none()
+}
 
 /// Accept hexadecimal values with optional U+ or 0x prefix.
 pub fn parse_codepoint(value: &str) -> Result<u32, String> {
@@ -564,10 +649,15 @@ impl CompositeFontProfile {
     }
 
     pub fn matching_range(&self, character: char) -> Option<(usize, &UnicodeRange)> {
+        let mut encoded = [0u8; 4];
+        self.matching_range_for_cluster(character.encode_utf8(&mut encoded))
+    }
+
+    pub fn matching_range_for_cluster(&self, cluster: &str) -> Option<(usize, &UnicodeRange)> {
         self.custom_ranges
             .iter()
             .enumerate()
-            .find(|(_, range)| range.contains(character))
+            .find(|(_, range)| range.matches_cluster(cluster))
     }
 
     pub fn class_enabled(&self, class: CharacterClass) -> bool {
@@ -575,10 +665,15 @@ impl CompositeFontProfile {
     }
 
     pub fn adjustment_for_character(&self, character: char) -> Option<&FontAdjustment> {
-        if let Some((_, range)) = self.matching_range(character) {
+        let mut encoded = [0u8; 4];
+        self.adjustment_for_cluster(character.encode_utf8(&mut encoded))
+    }
+
+    pub fn adjustment_for_cluster(&self, cluster: &str) -> Option<&FontAdjustment> {
+        if let Some((_, range)) = self.matching_range_for_cluster(cluster) {
             return Some(&range.adjustment);
         }
-        let class = classify_character(character);
+        let class = classify_character(cluster.chars().next()?);
         self.class_enabled(class)
             .then(|| self.adjustment_for(class))
     }
@@ -922,6 +1017,7 @@ mod tests {
             name: "Latin".into(),
             start: 0x41,
             end: 0x5a,
+            subranges: Vec::new(),
             adjustment: adjustment("Range"),
         });
         let loaded = profile.clone();
@@ -989,6 +1085,7 @@ mod tests {
                 name: name.to_owned(),
                 start,
                 end,
+                subranges: Vec::new(),
                 adjustment: adjustment(font),
             });
         }
@@ -1011,6 +1108,7 @@ mod tests {
             name: "test".to_owned(),
             start: 0,
             end: 0x10FFFF,
+            subranges: Vec::new(),
             adjustment: FontAdjustment::neutral(),
         };
         assert!(range.validate().is_ok());
@@ -1021,14 +1119,10 @@ mod tests {
         assert!(range.validate().is_err());
         for preset in UNICODE_PRESETS {
             assert!(
-                UnicodeRange {
-                    name: preset.name.to_owned(),
-                    start: preset.start,
-                    end: preset.end,
-                    adjustment: FontAdjustment::neutral()
-                }
-                .validate()
-                .is_ok()
+                preset
+                    .to_range(FontAdjustment::neutral())
+                    .validate()
+                    .is_ok()
             );
         }
     }
@@ -1057,6 +1151,12 @@ mod unicode_preset_tests {
             .iter()
             .map(|preset| (preset.start, preset.end, preset.block_name))
             .collect();
+        // The combined emoji preset is an extra range, not an official block.
+        let emoji_index = actual
+            .iter()
+            .position(|preset| preset.2 == "Emoji")
+            .unwrap();
+        assert_eq!(actual.remove(emoji_index), (0x0023, 0xE007F, "Emoji"));
         official.sort_unstable();
         actual.sort_unstable();
         assert_eq!(actual, official);
@@ -1078,7 +1178,8 @@ mod unicode_preset_tests {
                 "Hiragana",
                 "Katakana",
                 "Basic Latin",
-                "Halfwidth and Fullwidth Forms"
+                "Halfwidth and Fullwidth Forms",
+                "Emoji"
             ]
         );
         assert!(UNICODE_PRESETS[names.len()..].iter().all(|p| !p.frequent));
@@ -1093,6 +1194,22 @@ mod unicode_preset_tests {
         }
         assert!(!hiragana.matches("U+30A2"));
         assert!(!hiragana.matches("Katakana"));
+        let emoji = &UNICODE_PRESETS[names.len() - 1];
+        for query in [
+            "絵文字",
+            " EMOJI ",
+            "U+1F300",
+            "0x1FAFA",
+            "U+2764",
+            "1F1EF",
+            "0031",
+            "E007F",
+        ] {
+            assert!(emoji.matches(query), "{query}");
+        }
+        for query in ["U+3042", "0041", "1F3010", "1FAFF"] {
+            assert!(!emoji.matches(query), "{query}");
+        }
         let extension_j = UNICODE_PRESETS
             .iter()
             .find(|p| p.block_name.ends_with("Ideographs Extension J"))
@@ -1100,5 +1217,133 @@ mod unicode_preset_tests {
         assert_eq!((extension_j.start, extension_j.end), (0x323B0, 0x3347F));
         assert!(extension_j.matches("漢字 拡張J"));
         assert!(extension_j.matches("CJK Extension J"));
+    }
+
+    #[test]
+    fn emoji_ranges_match_official_properties_and_cover_every_test_sequence() {
+        use std::collections::BTreeSet;
+        let mut official = BTreeSet::new();
+        for line in include_str!("../../../resource/unicode/emoji-data-18.0.0.txt").lines() {
+            let data = line.split('#').next().unwrap();
+            let Some((points, property)) = data.split_once(';') else {
+                continue;
+            };
+            if !matches!(property.trim(), "Emoji" | "Emoji_Component") {
+                continue;
+            }
+            let (start, end) = points
+                .trim()
+                .split_once("..")
+                .unwrap_or((points.trim(), points.trim()));
+            official.extend(
+                u32::from_str_radix(start, 16).unwrap()..=u32::from_str_radix(end, 16).unwrap(),
+            );
+        }
+        let actual: BTreeSet<_> = EMOJI_RANGES
+            .iter()
+            .flat_map(|&[start, end]| start..=end)
+            .collect();
+        assert_eq!(actual, official);
+        assert_eq!(actual.len(), 1546);
+        assert_eq!(EMOJI_RANGES.len(), 154);
+        let preset = UNICODE_PRESETS
+            .iter()
+            .find(|preset| preset.block_name == "Emoji")
+            .unwrap();
+        assert_eq!(preset.subranges, EMOJI_RANGES);
+        let range = preset.to_range(FontAdjustment::neutral());
+        assert!(range.validate().is_ok());
+        let mut sequences = 0;
+        for line in include_str!("../../../resource/unicode/emoji-test-18.0.0.txt").lines() {
+            let Some((points, _)) = line.split('#').next().unwrap().split_once(';') else {
+                continue;
+            };
+            sequences += 1;
+            let mut cluster = String::new();
+            for point in points.split_whitespace() {
+                let character = char::from_u32(u32::from_str_radix(point, 16).unwrap()).unwrap();
+                assert!(range.contains(character), "U+{point} in {line}");
+                cluster.push(character);
+            }
+            assert!(range.matches_cluster(&cluster), "{line}");
+        }
+        assert!(sequences > 5000);
+        for character in ['A', '漢', 'あ', ' ', '\u{1F100}', '\u{1FAFF}'] {
+            assert!(!range.contains(character));
+        }
+    }
+
+    #[test]
+    fn emoji_keycaps_match_as_sequences_and_leave_bare_bases_to_lower_rules() {
+        let mut profile = CompositeFontProfile::neutral_default();
+        let preset = UNICODE_PRESETS
+            .iter()
+            .find(|p| p.block_name == "Emoji")
+            .unwrap();
+        let mut emoji = preset.to_range(FontAdjustment::neutral());
+        emoji.name = "Renamed emoji".into();
+        emoji.adjustment.font_family = "Emoji".into();
+        profile.custom_ranges.push(emoji);
+        profile.custom_ranges.push(UnicodeRange {
+            name: "Digits and symbols".into(),
+            start: 0x23,
+            end: 0x39,
+            subranges: Vec::new(),
+            adjustment: FontAdjustment {
+                font_family: "Numbers".into(),
+                ..FontAdjustment::neutral()
+            },
+        });
+        for character in "0123456789#*".chars() {
+            assert!(profile.custom_ranges[0].contains(character));
+            assert_eq!(profile.resolve(character).font_family, "Numbers");
+            assert_eq!(profile.resolve(character).rule_id, "unicode:1");
+            for cluster in [
+                format!("{character}\u{20E3}"),
+                format!("{character}\u{FE0F}\u{20E3}"),
+            ] {
+                assert!(is_emoji_keycap(&cluster));
+                assert_eq!(profile.matching_range_for_cluster(&cluster).unwrap().0, 0);
+            }
+        }
+        for malformed in [
+            "",
+            "1",
+            "1\u{FE0F}",
+            "1\u{FE0E}\u{20E3}",
+            "A\u{20E3}",
+            "1\u{20E3}\u{301}",
+        ] {
+            assert!(!is_emoji_keycap(malformed));
+        }
+        profile.custom_ranges.pop();
+        profile.digit.font_family = "Digit class".into();
+        assert_eq!(profile.resolve('1').font_family, "Digit class");
+        assert_eq!(profile.resolve('1').rule_id, "digit");
+    }
+
+    #[test]
+    fn rejects_malformed_subranges_including_invalid_envelopes() {
+        let mut range = UnicodeRange {
+            name: "test".into(),
+            start: 0x23,
+            end: 0x39,
+            subranges: vec![[0x23, 0x23], [0x30, 0x39]],
+            adjustment: FontAdjustment::neutral(),
+        };
+        assert!(range.validate().is_ok());
+        assert!(!range.contains('$'));
+        for subranges in [
+            vec![[0x23, 0x30], [0x30, 0x39]],
+            vec![[0x30, 0x39], [0x23, 0x23]],
+            vec![[0x23, 0x23], [0x39, 0x30]],
+            vec![[0x23, 0x23], [0xD800, 0xDFFF], [0x39, 0x39]],
+            vec![[0x24, 0x39]],
+            vec![[0x23, 0x38]],
+        ] {
+            range.subranges = subranges;
+            assert!(range.validate().is_err());
+            assert!(!range.contains('#'));
+        }
     }
 }

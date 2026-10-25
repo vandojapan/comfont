@@ -64,6 +64,7 @@ pub(crate) fn layout_options(
         disable_ligatures: request.disable_ligatures,
         force_ligatures: false,
         antialias: crate::shaping::AntialiasMethod::Natural,
+        color_glyphs: false,
     }
 }
 
@@ -92,6 +93,24 @@ pub(crate) fn prepare(
     text: &str,
     coverage: &mut dyn GlyphCoverage,
 ) -> Result<Option<crate::shaping::StyledText>, String> {
+    prepare_with_units(request, text, coverage, 2.0)
+}
+
+/// Native alias sizes and <sN> controls are already measured in pixels.
+pub(crate) fn prepare_native(
+    request: &RenderRequest,
+    text: &str,
+    coverage: &mut dyn GlyphCoverage,
+) -> Result<Option<crate::shaping::StyledText>, String> {
+    prepare_with_units(request, text, coverage, 1.0)
+}
+
+fn prepare_with_units(
+    request: &RenderRequest,
+    text: &str,
+    coverage: &mut dyn GlyphCoverage,
+    pixels_per_unit: f64,
+) -> Result<Option<crate::shaping::StyledText>, String> {
     use crate::shaping::{StyledText, TextStyle};
     use unicode_segmentation::UnicodeSegmentation;
     if !(1.0..=4096.0).contains(&request.size)
@@ -105,7 +124,7 @@ pub(crate) fn prepare(
     {
         return Ok(None);
     }
-    let base_size = request.size / 2.0;
+    let base_size = request.size / pixels_per_unit;
     let parse = if request.profile.is_some() {
         parse_control_text
     } else {
@@ -181,7 +200,7 @@ pub(crate) fn prepare(
             let style = TextStyle {
                 family: family.to_owned(),
                 size: (size
-                    * 2.0
+                    * pixels_per_unit
                     * if span.format.profile_size_allowed() {
                         metrics.size_ratio
                     } else {
@@ -234,6 +253,31 @@ mod tests {
         }
     }
     #[test]
+    fn native_sizes_use_pixels_for_defaults_and_inline_controls() {
+        let req = request("A<s32>😀<s>B");
+        let plan = prepare_native(&req, &req.text, &mut UnknownGlyphCoverage)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            plan.ranges.iter().map(|r| r.style.size).collect::<Vec<_>>(),
+            [64.0, 32.0, 64.0]
+        );
+        let max = RenderRequest {
+            size: 4096.0,
+            ..request("😀")
+        };
+        assert_eq!(
+            prepare_native(&max, &max.text, &mut UnknownGlyphCoverage)
+                .unwrap()
+                .unwrap()
+                .ranges[0]
+                .style
+                .size,
+            4096.0
+        );
+    }
+
+    #[test]
     fn ligature_switch_changes_cache_key_even_without_decoration() {
         let normal = RenderRequest {
             profile: Some(CompositeFontProfile::neutral_default()),
@@ -250,6 +294,7 @@ mod tests {
         assert!(!plan.modified);
         assert!(layout_options(&forced, None).disable_ligatures);
         assert!(!layout_options(&normal, None).disable_ligatures);
+        assert!(!layout_options(&normal, None).color_glyphs);
         assert_eq!(plan.utf16, "ffi".encode_utf16().collect::<Vec<_>>());
     }
 
@@ -276,6 +321,38 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(plan.modified);
+    }
+
+    #[test]
+    fn preview_inherits_the_object_font_and_applies_enabled_metrics() {
+        let mut profile = CompositeFontProfile::neutral_default();
+        profile.western.size_ratio = 1.5;
+        profile.western.baseline_shift_em = 0.25;
+        profile.western.tracking_adjust_em = 0.125;
+        profile.western.vertical_scale_ratio = 0.8;
+        profile.western.horizontal_scale_ratio = 1.2;
+        profile.western_fallbacks = vec![compositefont_core::FontAdjustment {
+            font_family: "Fallback".into(),
+            ..compositefont_core::FontAdjustment::neutral()
+        }];
+        for enabled in [false, true] {
+            profile.western.size_enabled = enabled;
+            let request = RenderRequest {
+                profile: Some(profile.clone()),
+                ..request("A")
+            };
+            let plan = prepare(&request, "A", &mut UnknownGlyphCoverage)
+                .unwrap()
+                .unwrap();
+            assert!(plan.modified);
+            let style = &plan.ranges[0].style;
+            assert_eq!(style.family, request.font);
+            assert_eq!(style.size, if enabled { 96.0 } else { 64.0 });
+            assert_eq!(style.baseline_shift, -8.0);
+            assert_eq!(style.tracking, 4.0);
+            assert_eq!(style.vertical, 0.8);
+            assert_eq!(style.horizontal, 1.2);
+        }
     }
 
     #[test]

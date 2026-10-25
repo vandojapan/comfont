@@ -1,6 +1,6 @@
 use compositefont_core::{
     CharacterClass, CompositeFontProfile, DEFAULT_PROFILE_NAME, FontAdjustment, MetricUnit,
-    ProfileDocument, ProfileEntry, UnicodeRange,
+    ProfileDocument, ProfileEntry, UnicodePreset, UnicodeRange,
 };
 
 pub const CATEGORY_ROWS: [CategoryRow; 7] = [
@@ -551,7 +551,7 @@ impl EditorModel {
             CATEGORY_ROWS[category].label.to_owned()
         } else {
             let range = &self.selected_profile().custom_ranges[category - CATEGORY_ROWS.len()];
-            format!("{} U+{:04X}–{:04X}", range.name, range.start, range.end)
+            format!("{} {}", range.name, range.range_label())
         }
     }
 
@@ -574,7 +574,7 @@ impl EditorModel {
             return String::new();
         };
         let range = &self.selected_profile().custom_ranges[index];
-        format!("U+{:04X}–U+{:04X}", range.start, range.end)
+        range.range_label()
     }
 
     pub fn selected_range(&self) -> Option<&UnicodeRange> {
@@ -587,8 +587,15 @@ impl EditorModel {
             name,
             start,
             end,
+            subranges: Vec::new(),
             adjustment: FontAdjustment::neutral(),
         };
+        self.add_unicode_range(range)
+    }
+    pub fn add_preset(&mut self, preset: &UnicodePreset) -> Result<(), String> {
+        self.add_unicode_range(preset.to_range(FontAdjustment::neutral()))
+    }
+    fn add_unicode_range(&mut self, range: UnicodeRange) -> Result<(), String> {
         range.validate()?;
         self.selected_profile_mut().custom_ranges.push(range);
         self.selected_category =
@@ -601,6 +608,9 @@ impl EditorModel {
             return Ok(());
         };
         let mut range = self.selected_profile().custom_ranges[index].clone();
+        if !range.subranges.is_empty() {
+            return Err("複数範囲のプリセットは開始・終了を編集できません。".to_owned());
+        }
         range.start = start;
         range.end = end;
         range.validate()?;

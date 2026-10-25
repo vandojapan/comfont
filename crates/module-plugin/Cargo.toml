@@ -19,6 +19,7 @@ windows.workspace = true
 unicode-segmentation = "=1.13.3"
 icu_properties = "=2.3.0"
 windows-core = "=0.62.2"
+windows-numerics = "=0.3.1"
 icu_normalizer = { version = "=2.3.0", default-features = false, features = ["compiled_data", "utf8_iter"] }
 
 [dev-dependencies]
