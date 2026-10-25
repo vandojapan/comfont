@@ -20,7 +20,7 @@ cf.capture_text(text, id, frame, raw)
 
 @描画
 --label:テキスト装飾
---information:通常文字はAviUtl2標準描画、SVG絵文字は部分合成します。Lua本文は連携スニペットが必要です。リガチャ強制ONの全体画像描画は静的本文専用です。
+--information:通常文字はAviUtl2標準描画、SVG絵文字は部分合成します。本文内Luaの実行結果は自動取得しません。リガチャ強制ONの全体画像描画は静的本文専用です。
 --string@profile:comfont::プロファイル,default
 --check@force_ligatures:comfont::リガチャを強制ON,false
 --select@antialias:comfont::アンチエイリアス=0,標準=0,滑らか=1,なし=2

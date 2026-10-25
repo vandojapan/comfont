@@ -9,7 +9,7 @@
 | [anm2仕様](anm2-spec.md) | 「描画@comfont」、自動処理の範囲、リガチャ強制ON |
 | [本文を保持する描画経路](native-text-path.md) | comfont本体の処理とSVG絵文字の合成手順 |
 | [設定画面の描画バックエンド](render-backend.md) | DX12・Vulkan・OpenGLの選択順、AviUtl2との互換性、実機確認項目 |
-| [Lua API](lua-api.md) | 本文内LuaやPSDToolKit字幕との明示連携 |
+| [Lua API](lua-api.md) | 文字列装飾・生成本文の明示登録に関するAPI仕様 |
 | [Unicodeプリセット](../resource/unicode/README.md) | 対象コードポイント、Unicode公式データ、旧プリセットとの違い |
 | [検証状況](validation.md) | 確認済みの条件、証跡、未確認事項 |
 

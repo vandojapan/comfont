@@ -1,4 +1,4 @@
--- comfont API 17対応。標準テキストの本文全体を1つのLuaブロックにします。
+-- Internal regression fixture for explicit API 17 text capture; not distributed.
 -- textは装飾前の表示全文の変数名に変更し、空文字でも毎フレームこの処理を通してください。
 -- この直後に既存のobj.mes(text)を1回だけ残します。旧スニペットへの追記ではなく置換用です。
 -- 同じオブジェクトに「描画@comfont」を配置し、プロファイルを指定してください。

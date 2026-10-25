@@ -1,4 +1,4 @@
--- API 18以降：標準テキスト → このスクリプト制御 → 描画@comfont の順に配置します。
+-- Internal regression fixture for explicit API 18 effect capture; not distributed.
 -- このコードをスクリプト制御の「スクリプト」欄へ貼り付けてください。
 local cf = obj.module("compositefont")
 assert(cf.api_version() >= 18, "comfont API 18以降へ更新してください")

@@ -270,7 +270,7 @@ version = 17
 assert(not pcall(control)) -- Never silently use an unsupported core.
 
 -- The common PSDToolKit call prints its own text, without an explicit hand-off.
--- Test the documented replacement verbatim so the user can paste it as-is.
+-- Retain the explicit PSD hand-off fixture as an API regression check.
 version = 18
 voice = { text = "あABC 1️⃣ 🇯🇵 👩‍💻", time = 0, x = 5, y = 6, z = 7 }
 local original = 'local o={id="L2"}; require("PSDToolKit").mes(o,obj)'
@@ -280,7 +280,7 @@ assert(loadstring(original, "unlinked standard PSDToolKit subtitle"))()
 assert(output == voice.text and cache == nil and seen == nil)
 saved["テキスト"] = psd_subtitle_example
 local psd_body = assert(psd_subtitle_example:match("^<%?(.*)%?>$"))
-local psd_run = assert(loadstring(psd_body, "documented PSDToolKit subtitle"))
+local psd_run = assert(loadstring(psd_body, "explicit PSDToolKit subtitle"))
 cache, seen, output = nil, nil, nil
 psd_run()
 assert(output == voice.text and cache.text == voice.text and seen == nil)
